@@ -6,3 +6,5 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+.stacker-cache/
+.stacked-pr-plan.json

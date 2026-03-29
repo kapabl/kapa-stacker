@@ -206,13 +206,13 @@ def parse_bxl(source: str) -> list[ImportRef]:
 _GRADLE_DEP_RE = re.compile(
     r"(?:implementation|api|compileOnly|runtimeOnly|testImplementation|"
     r"testRuntimeOnly|classpath|annotationProcessor)\s*"
-    r"[\(]?\s*['\"]([\\w.:@\-/\${}]+)['\"]\s*[\)]?",
+    r"[\(]?\s*['\"]([\w.:@\-/\${}]+)['\"]\s*[\)]?",
     re.MULTILINE,
 )
-_GRADLE_PROJECT_RE = re.compile(r"project\s*\(\s*['\"]([:.\\w\-/]+)['\"]\s*\)", re.MULTILINE)
-_GRADLE_APPLY_RE = re.compile(r"apply\s+from:\s*['\"]([\\w./\-]+)['\"]", re.MULTILINE)
+_GRADLE_PROJECT_RE = re.compile(r"project\s*\(\s*['\"]([:.\w\-/]+)['\"]\s*\)", re.MULTILINE)
+_GRADLE_APPLY_RE = re.compile(r"apply\s+from:\s*['\"]([\w./\-]+)['\"]", re.MULTILINE)
 _GRADLE_PLUGIN_RE = re.compile(
-    r"(?:apply\s+plugin:\s*['\"]([\\w.\-]+)['\"]|id\s*\(?\s*['\"]([\\w.\-]+)['\"]\s*\)?)",
+    r"(?:apply\s+plugin:\s*['\"]([\w.\-]+)['\"]|id\s*\(?\s*['\"]([\w.\-]+)['\"]\s*\)?)",
     re.MULTILINE,
 )
 
@@ -251,13 +251,13 @@ def parse_gradle_groovy(source: str) -> list[ImportRef]:
 _GK_DEP_RE = re.compile(
     r"(?:implementation|api|compileOnly|runtimeOnly|testImplementation|"
     r"testRuntimeOnly|classpath|annotationProcessor)\s*\(\s*"
-    r"['\"]([\\w.:@\-/]+)['\"]\s*\)",
+    r"['\"]([\w.:@\-/]+)['\"]\s*\)",
     re.MULTILINE,
 )
-_GK_PROJECT_RE = re.compile(r"project\s*\(\s*['\"]([\\w:.\-]+)['\"]\s*\)", re.MULTILINE)
-_GK_PLUGIN_RE = re.compile(r"id\s*\(\s*['\"]([\\w.\-]+)['\"]\s*\)", re.MULTILINE)
+_GK_PROJECT_RE = re.compile(r"project\s*\(\s*['\"]([\w:.\-]+)['\"]\s*\)", re.MULTILINE)
+_GK_PLUGIN_RE = re.compile(r"id\s*\(\s*['\"]([\w.\-]+)['\"]\s*\)", re.MULTILINE)
 _GK_INCLUDE_RE = re.compile(r"include\s*\((.*?)\)", re.DOTALL)
-_GK_STRING_RE = re.compile(r"['\"]([\\w:.\-/]+)['\"]")
+_GK_STRING_RE = re.compile(r"['\"]([\w:.\-/]+)['\"]")
 
 
 def parse_gradle_kts(source: str) -> list[ImportRef]:

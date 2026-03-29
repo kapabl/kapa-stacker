@@ -35,11 +35,17 @@ RESET = "\033[0m"
 def main() -> None:
     args = _parse_args()
 
-    # ── Setup ──
+    # ── Setup (installs ALL deps: ollama, ctags, scc, ast-grep, lizard) ──
     if args.setup or args.setup_minimal:
-        from src.infrastructure.llm.setup_ollama import run_setup
-        success = run_setup(model=args.ai_model, minimal=args.setup_minimal)
+        from src.infrastructure.setup import run_full_setup
+        success = run_full_setup(ollama_model=args.ai_model, minimal=args.setup_minimal)
         sys.exit(0 if success else 1)
+
+    # ── Index (pre-compute ctags, imports, co-change, complexity) ──
+    if args.index:
+        from src.infrastructure.indexer.index_all import index_repo
+        index_repo()
+        return
 
     # ── AI check ──
     if args.ai_check:
@@ -150,8 +156,12 @@ def _parse_args():
     p.add_argument("--ai-pull", action="store_true")
     p.add_argument("--ai-check", action="store_true")
 
-    p.add_argument("--setup", action="store_true", help="Setup ollama")
-    p.add_argument("--setup-minimal", action="store_true")
+    p.add_argument("--setup", action="store_true",
+                   help="Install all deps (ollama, ctags, scc, ast-grep, lizard)")
+    p.add_argument("--setup-minimal", action="store_true",
+                   help="Setup with smallest LLM model")
+    p.add_argument("--index", action="store_true",
+                   help="Pre-compute caches (ctags, imports, co-change, complexity)")
 
     return p.parse_args()
 
