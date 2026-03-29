@@ -44,6 +44,44 @@ def main() -> None:
 # ── Subcommand handlers ──────────────────────────────────────────────────
 
 
+def _cmd_init(args):
+    """Interactive setup for the current branch."""
+    import json
+
+    git = GitClient()
+    branch = git.current_branch()
+    base = git.detect_base()
+
+    print(f"\n{BOLD}  kapa-cortex — initializing for branch {CYAN}{branch}{RESET}\n")
+
+    base_input = input(f"  Base branch [{base}]: ").strip()
+    if base_input:
+        base = base_input
+
+    max_files_input = input(f"  Approximate files per PR [3]: ").strip()
+    max_files = int(max_files_input) if max_files_input else 3
+
+    max_lines_input = input(f"  Approximate code lines per PR [200]: ").strip()
+    max_lines = int(max_lines_input) if max_lines_input else 200
+
+    config = {
+        "branch": branch,
+        "base": base,
+        "max_files": max_files,
+        "max_lines": max_lines,
+    }
+
+    config_dir = Path(".cortex-cache/branches") / branch.replace("/", "-")
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_path = config_dir / "config.json"
+    config_path.write_text(json.dumps(config, indent=2))
+
+    print(f"\n  {GREEN}Config saved to {config_path}{RESET}")
+    print(f"  These are soft targets — the partitioner respects dependency")
+    print(f"  constraints and test pairing even if it exceeds these limits.\n")
+    print(f"  Next: {CYAN}kapa-cortex analyze{RESET}")
+
+
 def _cmd_setup(args):
     """Install all dependencies and configure."""
     from src.infrastructure.setup import run_full_setup
@@ -59,6 +97,7 @@ def _cmd_index(args):
 
 def _cmd_analyze(args):
     """Analyze branch and propose stacked PRs."""
+    _apply_branch_config(args)
     git = GitClient()
     if args.base is None:
         args.base = git.detect_base()
@@ -81,6 +120,7 @@ def _cmd_analyze(args):
 
 def _cmd_plan(args):
     """Generate execution plan with git commands."""
+    _apply_branch_config(args)
     git = GitClient()
     if args.base is None:
         args.base = git.detect_base()
@@ -188,6 +228,10 @@ def _parse_args():
 
     subparsers = root.add_subparsers(dest="command")
 
+    # ── init ──
+    init_parser = subparsers.add_parser("init", help="Interactive setup for current branch")
+    init_parser.set_defaults(func=_cmd_init)
+
     # ── setup ──
     setup_parser = subparsers.add_parser("setup", help="Install all dependencies")
     setup_parser.add_argument("--minimal", action="store_true", help="Smallest LLM model")
@@ -260,6 +304,27 @@ def _parse_args():
 
 
 # ── Shared helpers ───────────────────────────────────────────────────────
+
+
+def _apply_branch_config(args):
+    """Load branch config from init and apply as defaults."""
+    import json
+
+    git = GitClient()
+    branch = git.current_branch()
+    config_path = Path(".cortex-cache/branches") / branch.replace("/", "-") / "config.json"
+
+    if not config_path.exists():
+        return
+
+    config = json.loads(config_path.read_text())
+
+    if getattr(args, "base", None) is None:
+        args.base = config.get("base")
+    if getattr(args, "max_files", None) == 3:  # still at default
+        args.max_files = config.get("max_files", 3)
+    if getattr(args, "max_lines", None) == 200:  # still at default
+        args.max_lines = config.get("max_lines", 200)
 
 
 def _build_llm(args):
