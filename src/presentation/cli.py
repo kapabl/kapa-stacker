@@ -37,6 +37,23 @@ RESET = "\033[0m"
 def main() -> None:
     args = _parse_args()
 
+    # ── Daemon ──
+    if args.daemon:
+        _start_daemon()
+        return
+
+    if args.daemon_stop:
+        _stop_daemon()
+        return
+
+    if args.daemon_status:
+        _print_daemon_status()
+        return
+
+    if args.query:
+        _run_daemon_query(args.query)
+        return
+
     # ── Setup (installs ALL deps: ollama, ctags, scc, ast-grep, lizard) ──
     if args.setup or args.setup_minimal:
         from src.infrastructure.setup import run_full_setup
@@ -174,6 +191,16 @@ def _parse_args():
     arg_parser.add_argument("--index", action="store_true",
                    help="Pre-compute caches (ctags, imports, co-change, complexity)")
 
+    # Daemon
+    arg_parser.add_argument("--daemon", action="store_true",
+                   help="Start daemon (warm LSPs, in-memory index)")
+    arg_parser.add_argument("--daemon-stop", action="store_true",
+                   help="Stop running daemon")
+    arg_parser.add_argument("--daemon-status", action="store_true",
+                   help="Show daemon status")
+    arg_parser.add_argument("--query", type=str, metavar="ACTION",
+                   help="Send query to running daemon")
+
     return arg_parser.parse_args()
 
 
@@ -222,6 +249,75 @@ def _run_extraction(args, git, llm):
         source_branch=git.current_branch(), base_branch=args.base,
         branch_name=args.extract_branch, include_deps=not args.no_deps,
     )
+
+
+def _start_daemon():
+    """Start the daemon server."""
+    from src.interface.daemon.client import is_daemon_running
+    from src.interface.daemon.server import DaemonServer
+    from src.interface.daemon.query_router import QueryRouter
+
+    if is_daemon_running():
+        print(f"  {YELLOW}Daemon already running.{RESET}")
+        return
+
+    print(f"  {BOLD}Starting kapa-cortex daemon...{RESET}")
+    # TODO: wire real use cases as handlers
+    router = QueryRouter({
+        "status": lambda params: {"running": True, "lsp_servers": []},
+    })
+    server = DaemonServer(router)
+    print(f"  {GREEN}Listening on unix socket{RESET}")
+    server.start()  # blocks
+
+
+def _stop_daemon():
+    """Send stop signal to running daemon."""
+    from src.interface.daemon.client import is_daemon_running, send_query
+
+    if not is_daemon_running():
+        print(f"  {YELLOW}No daemon running.{RESET}")
+        return
+
+    response = send_query("shutdown")
+    print(f"  {GREEN}Daemon stopped.{RESET}" if response.status == "ok"
+          else f"  {RED}Failed: {response.error}{RESET}")
+
+
+def _print_daemon_status():
+    """Show daemon status."""
+    from src.interface.daemon.client import is_daemon_running, send_query
+
+    if not is_daemon_running():
+        print(f"  {RED}Daemon not running.{RESET}")
+        print(f"  Start with: {CYAN}kapa-cortex --daemon{RESET}")
+        return
+
+    response = send_query("status")
+    if response.status == "ok":
+        print(f"  {GREEN}Daemon running{RESET}")
+        for key, value in response.data.items():
+            print(f"    {key}: {value}")
+    else:
+        print(f"  {RED}Error: {response.error}{RESET}")
+
+
+def _run_daemon_query(action: str):
+    """Send a query to the daemon and print the result."""
+    import json as json_mod
+    from src.interface.daemon.client import is_daemon_running, send_query
+
+    if not is_daemon_running():
+        print(f"  {RED}Daemon not running.{RESET}")
+        print(f"  Start with: {CYAN}kapa-cortex --daemon{RESET}")
+        sys.exit(1)
+
+    response = send_query(action)
+    if response.status == "ok":
+        print(json_mod.dumps(response.data, indent=2))
+    else:
+        print(f"  {RED}Error: {response.error}{RESET}", file=sys.stderr)
+        sys.exit(1)
 
 
 def _print_ai_status():
