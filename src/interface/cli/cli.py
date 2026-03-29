@@ -297,19 +297,41 @@ def _install_claude_skill():
 
 
 def _start_daemon():
-    """Start the daemon server."""
+    """Start the daemon server with index lifecycle."""
     from src.interface.daemon.client import is_daemon_running
     from src.interface.daemon.server import DaemonServer
     from src.interface.daemon.query_router import QueryRouter
+    from src.interface.daemon.handlers import build_handler_map, set_index_store
+    from src.infrastructure.indexer.index_store import IndexStore
+    from src.infrastructure.indexer.incremental_indexer import build_full
 
     if is_daemon_running():
         print(f"  {YELLOW}Daemon already running.{RESET}")
         return
 
+    cache_path = ".cortex-cache/index.msgpack"
+
+    def on_start():
+        if Path(cache_path).exists():
+            print(f"  {CYAN}Loading index from cache...{RESET}")
+            store = IndexStore.load(cache_path)
+        else:
+            print(f"  {CYAN}Building index from source...{RESET}")
+            store = build_full()
+            store.save(cache_path)
+        set_index_store(store)
+        print(f"  {GREEN}Index: {store.file_count} files, {store.symbol_count} symbols, {store.edge_count} edges{RESET}")
+
+    def on_stop():
+        from src.interface.daemon.handlers import _get_index_store
+        store = _get_index_store()
+        if store and store.file_count > 0:
+            store.save(cache_path)
+            print(f"  {CYAN}Index saved to {cache_path}{RESET}")
+
     print(f"  {BOLD}Starting kapa-cortex daemon...{RESET}")
-    from src.interface.daemon.handlers import build_handler_map
     router = QueryRouter(build_handler_map())
-    server = DaemonServer(router)
+    server = DaemonServer(router, on_start=on_start, on_stop=on_stop)
     print(f"  {GREEN}Listening on unix socket{RESET}")
     server.start()  # blocks
 

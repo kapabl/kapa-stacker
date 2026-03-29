@@ -19,14 +19,24 @@ from src.interface.daemon.query_router import QueryRouter
 class DaemonServer:
     """Unix socket server that routes queries to use cases."""
 
-    def __init__(self, router: QueryRouter, socket_path: str = SOCKET_PATH):
+    def __init__(
+        self,
+        router: QueryRouter,
+        socket_path: str = SOCKET_PATH,
+        on_start: callable | None = None,
+        on_stop: callable | None = None,
+    ):
         self._router = router
         self._socket_path = socket_path
+        self._on_start = on_start
+        self._on_stop = on_stop
         self._running = False
         self._server_socket: socket.socket | None = None
 
     def start(self) -> None:
         """Start listening. Blocks until stop() is called."""
+        if self._on_start:
+            self._on_start()
         self._cleanup_stale_socket()
         self._server_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self._server_socket.bind(self._socket_path)
@@ -85,6 +95,8 @@ class DaemonServer:
             os.unlink(self._socket_path)
 
     def _shutdown(self) -> None:
+        if self._on_stop:
+            self._on_stop()
         if self._server_socket:
             self._server_socket.close()
         if os.path.exists(self._socket_path):
