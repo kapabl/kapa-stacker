@@ -25,3 +25,6 @@ kapa-cortex = "src.interface.cli.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["src*"]
+
+[tool.setuptools.package-data]
+"src.interface.skill" = ["*.md", "references/*.md", "scripts/*.sh"]

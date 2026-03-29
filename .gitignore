@@ -9,3 +9,4 @@ build/
 .cortex-cache/
 .cortex-plan.json
 .history/
+.claude/skills/

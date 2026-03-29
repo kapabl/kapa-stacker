@@ -276,11 +276,12 @@ def _install_claude_skill():
     """Install kapa-cortex as a Claude Code skill."""
     import shutil
 
-    skill_source = Path(__file__).resolve().parent.parent.parent.parent / ".claude" / "skills" / "kapa-cortex"
+    skill_source = Path(__file__).resolve().parent.parent / "skill"
     skill_target = Path.home() / ".claude" / "skills" / "kapa-cortex"
 
     if not skill_source.exists():
         print(f"  {RED}Skill source not found at {skill_source}{RESET}")
+        print(f"  {RED}kapa-cortex may not be installed correctly.{RESET}")
         sys.exit(1)
 
     if skill_target.exists():
