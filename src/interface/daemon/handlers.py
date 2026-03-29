@@ -8,7 +8,9 @@ from src.infrastructure.parsers.multi_lang_parser import (
     MultiLangSymbolExtractor,
 )
 from src.infrastructure.complexity.cached_analyzer import CachedComplexityAnalyzer
-from src.infrastructure.llm.ollama_backend import NullLLMService
+from src.infrastructure.llm.ollama_backend import OllamaLLMService
+from src.infrastructure.llm.llm_text_generator import LlmTextGenerator
+from src.infrastructure.llm.rule_based_generator import RuleBasedGenerator
 from src.infrastructure.git.cochange_adapter import CachedCochangeProvider
 from src.infrastructure.diff.difftastic_classifier import DifftasticClassifier
 from src.application.analyze_branch import AnalyzeBranchUseCase
@@ -22,14 +24,17 @@ def handle_analyze(params: dict) -> dict:
     max_files = params.get("max_files", 3)
     max_lines = params.get("max_lines", 200)
 
+    llm = OllamaLLMService()
+    text_generator = LlmTextGenerator(llm) if llm.available else RuleBasedGenerator()
+
     analyze_use_case = AnalyzeBranchUseCase(
         git=git,
         parser=MultiLangImportParser(),
         symbols=MultiLangSymbolExtractor(),
         complexity=CachedComplexityAnalyzer(),
-        llm=NullLLMService(),
         cochange=CachedCochangeProvider(),
         diff_classifier=DifftasticClassifier(),
+        text_generator=text_generator,
     )
 
     result = analyze_use_case.execute(base, max_files, max_lines)

@@ -11,6 +11,8 @@ from src.infrastructure.git.command_executor import ShellCommandRunner
 from src.infrastructure.parsers.multi_lang_parser import MultiLangImportParser, MultiLangSymbolExtractor
 from src.infrastructure.complexity.cached_analyzer import CachedComplexityAnalyzer
 from src.infrastructure.llm.ollama_backend import OllamaLLMService, NullLLMService, check_llm_backends
+from src.infrastructure.llm.llm_text_generator import LlmTextGenerator
+from src.infrastructure.llm.rule_based_generator import RuleBasedGenerator
 from src.infrastructure.persistence.json_plan_store import JsonPlanStore
 from src.infrastructure.git.cochange_adapter import CachedCochangeProvider
 from src.infrastructure.diff.difftastic_classifier import DifftasticClassifier
@@ -219,13 +221,23 @@ def _build_llm(args):
     return OllamaLLMService(backend=args.ai_backend, model=args.ai_model, auto_pull=args.ai_pull)
 
 
+def _build_text_generator(llm):
+    if llm.available:
+        return LlmTextGenerator(llm)
+    return RuleBasedGenerator()
+
+
 def _run_analysis(args, git, llm):
     parser = MultiLangImportParser()
     symbols = MultiLangSymbolExtractor()
     complexity = CachedComplexityAnalyzer()
     cochange = CachedCochangeProvider()
     diff_classifier = DifftasticClassifier()
-    analyze_use_case = AnalyzeBranchUseCase(git, parser, symbols, complexity, llm, cochange, diff_classifier)
+    text_generator = _build_text_generator(llm)
+    analyze_use_case = AnalyzeBranchUseCase(
+        git, parser, symbols, complexity,
+        cochange, diff_classifier, text_generator,
+    )
     print(f"Analyzing...", file=sys.stderr)
     return analyze_use_case.execute(args.base, args.max_files, args.max_lines)
 

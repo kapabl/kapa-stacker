@@ -15,15 +15,14 @@ from src.domain.service.merge_order_resolver import compute_pr_dependencies
 from src.domain.policy.risk_policy import compute_risk
 from src.domain.policy.merge_strategy_policy import assign_strategies
 from src.domain.service.test_pair_finder import find_test_pairs
-from src.domain.service.pr_namer import generate_title
 from src.domain.port.git_reader import GitReader
 from src.domain.port.import_parser import ImportParser
 from src.domain.port.symbol_extractor import SymbolExtractor
 from src.domain.port.complexity_analyzer import ComplexityAnalyzer
-from src.domain.port.llm_service import LLMService
 from src.domain.port.cochange_provider import CochangeProvider
 from src.domain.port.diff_classifier import DiffClassifier
 from src.domain.port.definition_resolver import DefinitionResolver
+from src.domain.port.text_generator import TextGenerator
 
 
 class AnalyzeBranchUseCase:
@@ -35,18 +34,18 @@ class AnalyzeBranchUseCase:
         parser: ImportParser,
         symbols: SymbolExtractor,
         complexity: ComplexityAnalyzer,
-        llm: LLMService,
         cochange: CochangeProvider,
         diff_classifier: DiffClassifier,
+        text_generator: TextGenerator,
         resolver: DefinitionResolver | None = None,
     ):
         self._git = git
         self._parser = parser
         self._symbols = symbols
         self._complexity = complexity
-        self._llm = llm
         self._cochange = cochange
         self._diff_classifier = diff_classifier
+        self._text_generator = text_generator
         self._resolver = resolver
 
     def execute(
@@ -76,9 +75,16 @@ class AnalyzeBranchUseCase:
         file_edges = [(s, t) for s, t, _, _ in edges]
         compute_pr_dependencies(prs, file_edges)
 
-        for pr in prs:
-            pr.risk_score = compute_risk(pr)
-            pr.title = f"PR #{pr.index}: {generate_title(pr.files)}"
+        for proposed_pr in prs:
+            proposed_pr.risk_score = compute_risk(proposed_pr)
+            diff_combined = "\n".join(file.diff_text for file in proposed_pr.files)
+            paths = [file.path for file in proposed_pr.files]
+            symbols = [sym.name for file in proposed_pr.files for sym in file.symbols_defined]
+            title = self._text_generator.generate_title(diff_combined, paths, symbols)
+            proposed_pr.title = f"PR #{proposed_pr.index}: {title}"
+            proposed_pr.description = self._text_generator.generate_summary(
+                diff_combined, paths, proposed_pr.depends_on,
+            )
 
         assign_strategies(prs)
 
