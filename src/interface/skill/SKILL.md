@@ -12,16 +12,16 @@ description: >
 ## Token-Saving Rule
 
 NEVER read source files to understand branch structure or dependencies.
-Run `kapa-cortex --json` first. The tool analyzes dependencies, complexity,
-co-change history, and structural diffs locally on the CPU. Use the compact
-JSON output as context instead of reading raw files.
+Run `kapa-cortex analyze --json` first. The tool analyzes dependencies,
+complexity, co-change history, and structural diffs locally on the CPU.
+Use the compact JSON output as context instead of reading raw files.
 
 ## Prerequisites
 
 Verify `kapa-cortex` is available:
 
 ```bash
-which kapa-cortex || pip install -e /path/to/kapa-cortex
+which kapa-cortex || pip install kapa-cortex
 ```
 
 Verify the working directory is a git repo with a feature branch.
@@ -31,124 +31,96 @@ Verify the working directory is a git repo with a feature branch.
 ### 1. Check and refresh caches
 
 ```bash
-# Check if caches exist and are fresh
 ls -la .cortex-cache/ 2>/dev/null
-
-# If missing or stale, rebuild (takes seconds)
-kapa-cortex --index
+kapa-cortex index                       # rebuild if missing or stale
 ```
 
 ### 2. Analyze the branch
 
 ```bash
-# Structured JSON output — use this, not file reads
-kapa-cortex --json
+kapa-cortex analyze                     # text output
+kapa-cortex analyze --json              # structured JSON — use this
+kapa-cortex analyze --dot               # DOT graph
+kapa-cortex analyze --base develop      # custom base branch
 ```
-
-The JSON contains everything needed: branch name, base branch, proposed PRs
-with files, dependency edges, complexity scores, risk scores, merge strategies.
 
 ### 3. Answer questions from JSON
 
-Use the JSON output to answer user questions about the branch without reading
-source files. The output includes:
+Use the JSON output to answer user questions without reading source files:
 - Which files changed and how they group into PRs
 - Dependency ordering (which PRs must land first)
-- Risk scores (0-1 scale) per PR
-- Merge strategy recommendations (squash, merge, rebase)
-- Cyclomatic complexity per file
+- Risk levels and complexity warnings
+- File-level detail (added/removed lines, status)
 
 ### 4. Generate execution plan
 
 ```bash
-kapa-cortex --generate-plan    # creates .cortex-plan.json
-kapa-cortex --print-commands   # copy-pasteable git commands
-kapa-cortex --shell-script     # executable bash script
+kapa-cortex plan                        # generate plan + show commands
+kapa-cortex plan --commands             # git commands only
+kapa-cortex plan --shell-script         # executable bash script
 ```
 
 ### 5. Extract file subsets
 
 ```bash
-kapa-cortex --extract "auth changes"     # natural language query
-kapa-cortex --extract "auth" --no-deps   # without dependency resolution
+kapa-cortex extract "auth changes"      # natural language query
+kapa-cortex extract "auth" --no-deps    # without dependency resolution
 ```
 
 ### 6. Execute the plan
 
 ```bash
-kapa-cortex --run-plan --dry-run   # preview first — ALWAYS do this
-kapa-cortex --run-plan             # execute after confirmation
-kapa-cortex --check-plan           # check progress
-kapa-cortex --run-plan --step 5    # retry a specific step
+kapa-cortex run --dry-run               # preview first — ALWAYS do this
+kapa-cortex run                         # execute after confirmation
+kapa-cortex status                      # check progress
+kapa-cortex run --step 5                # retry a specific step
 ```
 
 ### 7. Daemon mode (for repeated queries)
 
 ```bash
-kapa-cortex --daemon               # start daemon with warm LSP servers
-kapa-cortex --daemon-status        # check if daemon is running
-kapa-cortex --query "analyze"      # fast query via daemon
-kapa-cortex --daemon-stop          # stop daemon
+kapa-cortex daemon start                # start with warm LSP + index
+kapa-cortex daemon status               # check health
+kapa-cortex daemon query analyze        # fast query via daemon
+kapa-cortex daemon query impact src/auth.py
+kapa-cortex daemon query hotspots
+kapa-cortex daemon stop                 # shutdown
 ```
 
-The daemon keeps LSP servers (pyright, clangd, gopls, jdtls, rust-analyzer)
-warm and maintains an in-memory index. First query boots servers (seconds),
-subsequent queries return in milliseconds.
+## Command Reference
 
-## Flag Reference
+| Command | Description |
+|---------|-------------|
+| `setup` | Install all dependencies |
+| `index` | Pre-compute caches |
+| `analyze` | Analyze branch, propose PRs |
+| `plan` | Generate execution plan |
+| `run` | Execute plan |
+| `status` | Show plan progress |
+| `extract PROMPT` | Extract file subset |
+| `daemon start\|stop\|status\|query` | Manage daemon |
+| `install-skill` | Install Claude Code skill |
+| `ai-check` | Check LLM backends |
 
-| Flag | Description |
-|------|-------------|
-| `--base BRANCH` | Diff against specific base (default: auto-detect) |
-| `--max-files N` | Max files per PR (default: 3) |
-| `--max-lines N` | Max code lines per PR (default: 200) |
-| `--json` | JSON output |
-| `--generate-plan` | Create plan with git commands |
-| `--check-plan` | Show plan progress |
-| `--run-plan` | Execute plan |
-| `--dry-run` | Preview without executing |
-| `--step N` | Execute specific step |
-| `--extract PROMPT` | Natural language file extraction |
-| `--no-deps` | Skip dependency resolution in extraction |
-| `--index` | Pre-compute caches |
-| `--daemon` | Start daemon |
-| `--query ACTION` | Send query to daemon |
-| `--no-ai` | Disable local LLM |
-| `--visualize` | DOT graph output |
+## Common Flags
 
-## JSON Output Schema
-
-```json
-{
-  "branch": "feat/my-feature",
-  "base": "master",
-  "total_prs": 4,
-  "file_dependency_edges": 12,
-  "prs": [
-    {
-      "index": 1,
-      "title": "PR #1: Add auth middleware",
-      "files": [
-        {"path": "src/auth.py", "status": "A", "added": 45, "removed": 0,
-         "is_docs": false, "complexity": 3}
-      ],
-      "code_lines": 45,
-      "total_lines": 45,
-      "complexity": 3,
-      "depends_on": [],
-      "merge_strategy": "squash",
-      "risk_score": 0.12
-    }
-  ]
-}
-```
+| Flag | Applies to | Description |
+|------|-----------|-------------|
+| `--json` | analyze | JSON output |
+| `--dot` | analyze | DOT graph output |
+| `--base BRANCH` | analyze, plan, extract | Base branch |
+| `--max-files N` | analyze, plan | Approx files per PR (default: 3) |
+| `--max-lines N` | analyze, plan | Approx lines per PR (default: 200) |
+| `--dry-run` | run | Preview without executing |
+| `--step N` | run | Execute single step |
+| `--no-ai` | global | Disable LLM |
 
 ## Safety Rules
 
-- ALWAYS run `--dry-run` before `--run-plan` unless the user explicitly says to skip
+- ALWAYS `run --dry-run` before `run` unless user explicitly says to skip
 - Warn if the branch has uncommitted changes
-- If a step fails, use `--check-plan` to see progress, then `--step N` to retry
-- Never read source files for structural understanding — use `--json` output
+- If a step fails, use `status` to see progress, then `run --step N` to retry
+- Never read source files for structural understanding — use `analyze --json`
 
 ## Supported Languages
 

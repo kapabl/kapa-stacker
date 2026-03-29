@@ -26,27 +26,14 @@ python kapa-cortex.py --help
 ## Quick Start
 
 ```bash
-# Pre-compute caches (ctags, imports, co-change, complexity)
-kapa-cortex --index
-
-# Analyze and see proposed stacked PRs
-kapa-cortex
-
-# JSON output (for scripts and Claude Code skill)
-kapa-cortex --json
-
-# Generate an execution plan with all git commands
-kapa-cortex --generate-plan
-
-# Dry run first, then execute
-kapa-cortex --run-plan --dry-run
-kapa-cortex --run-plan
-
-# Check plan progress
-kapa-cortex --check-plan
-
-# If your base branch isn't main
-kapa-cortex --base develop
+kapa-cortex index                       # pre-compute caches
+kapa-cortex analyze                     # see proposed stacked PRs
+kapa-cortex analyze --json              # JSON output
+kapa-cortex plan                        # generate git commands
+kapa-cortex run --dry-run               # preview execution
+kapa-cortex run                         # execute the plan
+kapa-cortex status                      # check progress
+kapa-cortex analyze --base develop      # custom base branch
 ```
 
 ## Daemon Mode
@@ -54,10 +41,12 @@ kapa-cortex --base develop
 Start once, query many times — keeps LSP servers warm and index in memory:
 
 ```bash
-kapa-cortex --daemon              # start (boots pyright, clangd, gopls, jdtls, rust-analyzer)
-kapa-cortex --daemon-status       # check status
-kapa-cortex --query "analyze"     # fast query via daemon
-kapa-cortex --daemon-stop         # stop
+kapa-cortex daemon start                # boots pyright, clangd, gopls, jdtls, rust-analyzer
+kapa-cortex daemon status               # check health
+kapa-cortex daemon query analyze        # fast query
+kapa-cortex daemon query impact src/auth.py
+kapa-cortex daemon query hotspots
+kapa-cortex daemon stop
 ```
 
 ## Extract Specific Changes
@@ -65,11 +54,11 @@ kapa-cortex --daemon-stop         # stop
 Pull a subset of files into a separate PR branch using natural language:
 
 ```bash
-kapa-cortex --extract "gradle init-script files"
-kapa-cortex --extract "src/core/ changes"
-kapa-cortex --extract "all CMakeLists.txt changes"
-kapa-cortex --extract "python test files"
-kapa-cortex --extract "the authentication refactor"
+kapa-cortex extract "gradle init-script files"
+kapa-cortex extract "src/core/ changes"
+kapa-cortex extract "all CMakeLists.txt changes"
+kapa-cortex extract "python test files"
+kapa-cortex extract "the authentication refactor"
 ```
 
 ## Claude Code Skill
@@ -77,7 +66,7 @@ kapa-cortex --extract "the authentication refactor"
 Install as a Claude Code skill for token-efficient analysis:
 
 ```bash
-kapa-cortex --install-skill
+kapa-cortex install-skill
 ```
 
 Claude Code will auto-trigger on phrases like "split this branch into PRs",
@@ -86,11 +75,10 @@ Claude Code will auto-trigger on phrases like "split this branch into PRs",
 ## Output Formats
 
 ```bash
-kapa-cortex --json
-kapa-cortex --visualize
-kapa-cortex --dot-file graph.dot
-kapa-cortex --print-commands
-kapa-cortex --shell-script > create-stack.sh
+kapa-cortex analyze --json              # JSON
+kapa-cortex analyze --dot               # DOT graph
+kapa-cortex plan --commands             # git commands only
+kapa-cortex plan --shell-script > stack.sh  # bash script
 ```
 
 ## AI Mode
@@ -99,10 +87,10 @@ AI is **on by default** using ollama. If ollama isn't running, it silently
 falls back to rule-based analysis. No API keys needed.
 
 ```bash
-kapa-cortex --setup              # install all deps
-kapa-cortex --setup-minimal      # smallest model (~1.6 GB)
-kapa-cortex --ai-check           # check backends
-kapa-cortex --no-ai              # disable AI
+kapa-cortex setup                # install all deps
+kapa-cortex setup --minimal      # smallest model (~1.6 GB)
+kapa-cortex ai-check             # check backends
+kapa-cortex analyze --no-ai      # disable AI for a single run
 ```
 
 ## Risk & Complexity Labels

@@ -7,10 +7,14 @@ from datetime import datetime, timezone
 
 from src.domain.entity.execution_plan import ExecutionPlan, PRPlan, PlanStep
 from src.domain.entity.proposed_pr import ProposedPR
+from src.domain.port.text_generator import TextGenerator
 
 
 class GeneratePlanUseCase:
     """Creates git execution plans from proposed PRs."""
+
+    def __init__(self, text_generator: TextGenerator):
+        self._text_generator = text_generator
 
     def execute(
         self,
@@ -111,10 +115,12 @@ class GeneratePlanUseCase:
         ))
 
         step_id += 1
+        diff_combined = "\n".join(file.diff_text for file in pr.files)
+        commit_message = self._text_generator.generate_commit_message(diff_combined, pr.title)
         plan.steps.append(PlanStep(
             id=step_id, pr_index=pr.index, phase="commit",
             description=f"Commit: {pr.title}",
-            commands=["git add -A", f"git commit -m '{pr.title}'"],
+            commands=["git add -A", f"git commit -m '{commit_message}'"],
         ))
 
         step_id += 1
