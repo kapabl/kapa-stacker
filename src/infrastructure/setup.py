@@ -31,14 +31,16 @@ def run_full_setup(
     ok = _install_ctags() and ok
     ok = _install_scc() and ok
     ok = _install_ast_grep() and ok
+    ok = _install_difftastic() and ok
     ok = _install_ollama(ollama_model, minimal) and ok
 
     _print_status()
+    _install_skill()
+    _run_index()
 
     if ok:
-        print(f"\n  {GREEN}Setup complete!{RESET}")
-        print(f"  Run: {CYAN}kapa-cortex --index{RESET} to pre-compute caches")
-        print(f"  Then: {CYAN}kapa-cortex{RESET} to analyze your branch")
+        print(f"\n  {GREEN}Setup complete! Ready to use.{RESET}")
+        print(f"  Run: {CYAN}kapa-cortex analyze{RESET}")
     else:
         print(f"\n  {YELLOW}Some tools failed to install. Core features still work.{RESET}")
 
@@ -167,6 +169,24 @@ def _install_ast_grep() -> bool:
     return False
 
 
+def _install_difftastic() -> bool:
+    """Install difftastic (structural diff tool)."""
+    print(f"  {BOLD}difftastic{RESET}")
+    if shutil.which("difft"):
+        print(f"    {GREEN}✓{RESET} already installed")
+        return True
+
+    plat = _detect_platform()
+    if plat == "macos" and shutil.which("brew"):
+        return _run_cmd("brew install difftastic", "difftastic")
+
+    if shutil.which("cargo"):
+        return _run_cmd("cargo install --locked difftastic", "difftastic")
+
+    print(f"    {YELLOW}⊘{RESET} skipped — install manually: {DIM}cargo install difftastic{RESET}")
+    return False
+
+
 def _install_ollama(model: str | None, minimal: bool) -> bool:
     """Install and configure ollama."""
     print(f"  {BOLD}ollama{RESET}")
@@ -231,6 +251,7 @@ def _print_status():
         ("ctags", "ctags"),
         ("scc", "scc"),
         ("ast-grep", "ast-grep"),
+        ("difftastic", "difft"),
         ("ollama", "ollama"),
     ]
     for name, binary in tools:
@@ -248,3 +269,32 @@ def _check_python_module(name: str) -> bool:
         return True
     except ImportError:
         return False
+
+
+def _install_skill():
+    """Install Claude Code skill."""
+    print(f"\n  {BOLD}Claude Code skill{RESET}")
+    try:
+        from pathlib import Path
+        import shutil as sh
+        skill_source = Path(__file__).resolve().parent.parent / "interface" / "skill"
+        skill_target = Path.home() / ".claude" / "skills" / "kapa-cortex"
+        if not skill_source.exists():
+            print(f"    {YELLOW}⊘{RESET} skill files not found")
+            return
+        if skill_target.exists():
+            sh.rmtree(skill_target)
+        sh.copytree(skill_source, skill_target)
+        print(f"    {GREEN}✓{RESET} installed to ~/.claude/skills/kapa-cortex/")
+    except Exception as exc:
+        print(f"    {YELLOW}⊘{RESET} failed: {exc}")
+
+
+def _run_index():
+    """Pre-compute caches for the current repo."""
+    print(f"\n  {BOLD}Pre-computing caches...{RESET}")
+    try:
+        from src.infrastructure.indexer.index_all import index_repo
+        index_repo()
+    except Exception as exc:
+        print(f"    {YELLOW}⊘{RESET} indexing failed: {exc}")
