@@ -112,8 +112,13 @@ _SYMBOL_QUERIES: dict[str, str] = {
 }
 
 
-def _run_query(source: str, lang: str, query_text: str) -> list[str]:
-    """Run a tree-sitter query and return matched text nodes."""
+_parser_cache: dict[str, tuple] = {}
+
+
+def _get_parser(lang: str):
+    """Get cached tree-sitter parser and language."""
+    if lang in _parser_cache:
+        return _parser_cache[lang]
     try:
         import warnings
         import tree_sitter_languages
@@ -121,8 +126,18 @@ def _run_query(source: str, lang: str, query_text: str) -> list[str]:
             warnings.simplefilter("ignore")
             parser = tree_sitter_languages.get_parser(lang)
             ts_lang = tree_sitter_languages.get_language(lang)
+        _parser_cache[lang] = (parser, ts_lang)
+        return parser, ts_lang
     except (ImportError, Exception):
+        return None
+
+
+def _run_query(source: str, lang: str, query_text: str) -> list[str]:
+    """Run a tree-sitter query and return matched text nodes."""
+    cached = _get_parser(lang)
+    if not cached:
         return []
+    parser, ts_lang = cached
 
     tree = parser.parse(source.encode("utf-8"))
     try:

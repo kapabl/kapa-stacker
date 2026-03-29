@@ -35,7 +35,6 @@ def run_full_setup(
     ok = _install_ollama(ollama_model, minimal) and ok
 
     _print_status()
-    _install_skill()
     _run_index()
 
     if ok:

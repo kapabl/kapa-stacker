@@ -102,7 +102,7 @@ def _query_or_local(action: str, params: dict) -> dict:
 
     _ensure_daemon()
     response = send_query(action, params)
-    if not response.ok:
+    if response.status != "ok":
         print(f"  {RED}{response.error}{RESET}")
         sys.exit(1)
     return response.data
@@ -614,7 +614,7 @@ def _fork_daemon_background():
     pid = _os.fork()
     if pid > 0:
         # Parent — wait for daemon socket to appear
-        for _ in range(50):  # up to 5 seconds
+        for _ in range(300):  # up to 30 seconds
             if _os.path.exists(SOCKET_PATH):
                 print(f"  {GREEN}Daemon started (pid {pid}){RESET}", file=sys.stderr)
                 return
@@ -647,9 +647,12 @@ def _run_daemon_server(silent: bool = False):
 
     def on_stop():
         from src.interface.daemon.handlers import _get_index_store
-        store = _get_index_store()
-        if store and store.file_count > 0:
-            store.save(STORE_PATH)
+        try:
+            store = _get_index_store()
+            if store and store.file_count > 0:
+                store.save(STORE_PATH)
+        except (OSError, FileNotFoundError):
+            pass
 
     server = DaemonServer(QueryRouter({}), on_start=on_start, on_stop=on_stop)
     router = QueryRouter(build_handler_map(server))
@@ -676,9 +679,12 @@ def _stop_daemon():
         print(f"  {YELLOW}No daemon running.{RESET}")
         return
 
-    response = send_query("shutdown")
-    print(f"  {GREEN}Daemon stopped.{RESET}" if response.status == "ok"
-          else f"  {RED}Failed: {response.error}{RESET}")
+    try:
+        response = send_query("shutdown")
+        print(f"  {GREEN}Daemon stopped.{RESET}" if response.status == "ok"
+              else f"  {RED}Failed: {response.error}{RESET}")
+    except (ConnectionResetError, ConnectionRefusedError, OSError):
+        print(f"  {GREEN}Daemon stopped.{RESET}")
 
 
 def _print_daemon_status():

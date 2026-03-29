@@ -15,6 +15,28 @@ from src.infrastructure.parsers.language_detector import detect_language
 
 STORE_PATH = ".cortex-cache/index.msgpack"
 
+# Symbol kinds that can never be call targets (language-agnostic exclusion)
+_NON_CALLABLE_KINDS = frozenset({
+    "chapter", "section", "subsection", "subsubsection", "l4subsection",
+    "l5subsection", "footnote", "play",  # markdown/docs
+    "const", "constant", "define", "macro", "macroparam",  # constants/macros
+    "var", "variable", "globalVar", "local", "field", "member",
+    "anonMember", "parameter", "receiver",  # variables/fields
+    "enum", "enumerator",  # enum values
+    "package", "packageName", "namespace", "nsprefix",  # packages
+    "label", "target", "id",  # misc non-callable
+    "key", "string", "number", "boolean", "null", "array", "object",  # JSON/data
+    "heredoc", "oneof", "message", "service", "rpc",  # protobuf
+    "type", "talias",  # type aliases (not constructors)
+})
+
+
+def _normalize_path(path: str) -> str:
+    """Strip leading ./ for consistent path keys."""
+    if path.startswith("./"):
+        return path[2:]
+    return path
+
 
 def build_index_store(root: str = ".") -> IndexStore:
     """Assemble IndexStore from JSON caches and save as msgpack."""
@@ -23,7 +45,7 @@ def build_index_store(root: str = ".") -> IndexStore:
     _load_files(store, root)
     _load_symbols(store, root)
     _load_imports(store, root)
-    _build_edges(store)
+    _build_edges(store, root)
     _load_and_resolve_calls(store, root)
 
     store_path = Path(root) / STORE_PATH
@@ -34,7 +56,8 @@ def build_index_store(root: str = ".") -> IndexStore:
 def _load_files(store: IndexStore, root: str) -> None:
     """Populate file entries from complexity cache."""
     complexity = load_complexity_cache(root) or {}
-    for file_path, metrics in complexity.items():
+    for raw_path, metrics in complexity.items():
+        file_path = _normalize_path(raw_path)
         language = detect_language(file_path) or metrics.get("language", "")
         store.add_file(FileEntry(
             path=file_path,
@@ -48,7 +71,8 @@ def _load_files(store: IndexStore, root: str) -> None:
 def _load_symbols(store: IndexStore, root: str) -> None:
     """Populate symbols from ctags cache."""
     ctags = load_ctags_cache(root) or {}
-    for file_path, symbol_list in ctags.items():
+    for raw_path, symbol_list in ctags.items():
+        file_path = _normalize_path(raw_path)
         entries = [
             SymbolEntry(
                 name=sym.get("name", ""),
@@ -65,7 +89,8 @@ def _load_symbols(store: IndexStore, root: str) -> None:
 def _load_imports(store: IndexStore, root: str) -> None:
     """Populate imports from import cache."""
     imports = load_import_cache(root) or {}
-    for file_path, import_list in imports.items():
+    for raw_path, import_list in imports.items():
+        file_path = _normalize_path(raw_path)
         entries = [
             ImportEntry(
                 raw=imp.get("raw", ""),
@@ -78,14 +103,16 @@ def _load_imports(store: IndexStore, root: str) -> None:
         store.add_imports(file_path, entries)
 
 
-def _build_edges(store: IndexStore) -> None:
+def _build_edges(store: IndexStore, root: str = ".") -> None:
     """Build dependency edges from imports → file definitions."""
-    module_index = _build_module_index(store)
+    resolvers = _build_resolvers(root, store)
 
     for file_path, imports in store.imports.items():
         for imp in imports:
-            target = _resolve_import(imp.module, file_path, module_index)
-            if target:
+            targets = _resolve_import_chain(
+                imp.module, file_path, resolvers,
+            )
+            for target in targets:
                 store.add_edge(EdgeEntry(
                     source=file_path, target=target,
                     kind="import", weight=1.0,
@@ -100,11 +127,11 @@ def _load_and_resolve_calls(store: IndexStore, root: str) -> None:
     """
     raw_calls = load_call_cache(root) or {}
 
-    # symbol name → all files that define it
+    # symbol name → all files that define it (exclude non-callable kinds)
     symbol_to_files: dict[str, list[str]] = {}
     for file_path, symbol_list in store.symbols.items():
         for symbol in symbol_list:
-            if symbol.kind in ("function", "class", "method", "symbol"):
+            if symbol.kind not in _NON_CALLABLE_KINDS:
                 symbol_to_files.setdefault(symbol.name, []).append(file_path)
 
     # caller_file → set of files it depends on (has import edge to)
@@ -117,7 +144,8 @@ def _load_and_resolve_calls(store: IndexStore, root: str) -> None:
     for file_path, import_list in store.imports.items():
         imports_of[file_path] = {imp.module for imp in import_list}
 
-    for caller_file, call_list in raw_calls.items():
+    for raw_caller, call_list in raw_calls.items():
+        caller_file = _normalize_path(raw_caller)
         caller_deps = deps_of.get(caller_file, set())
         caller_imports = imports_of.get(caller_file, set())
         for call in call_list:
@@ -209,6 +237,48 @@ def _build_module_index(store: IndexStore) -> dict[str, str]:
             suffix.setdefault(key, file_path)
 
     return {"exact": exact, "suffix": suffix}
+
+
+def _build_resolvers(root: str, store: IndexStore) -> list[callable]:
+    """Build a chain of import resolvers. Each returns targets or empty."""
+    from src.infrastructure.parsers.go_module_resolver import GoModuleResolver
+
+    from src.infrastructure.parsers.go_module_resolver import build_dir_index
+
+    known_files = set(store.files.keys())
+    module_index = _build_module_index(store)
+    resolvers: list[callable] = []
+
+    # Language-specific resolvers (auto-detect from project files)
+    go_resolver = GoModuleResolver(root)
+    if go_resolver.available:
+        dir_index = build_dir_index(known_files)
+        resolvers.append(
+            lambda module, source: [
+                target for target in go_resolver.resolve_to_files(module, dir_index)
+                if target != source
+            ]
+        )
+
+    # Generic module index (fallback for all languages)
+    resolvers.append(
+        lambda module, source: (
+            [target] if (target := _resolve_import(module, source, module_index)) else []
+        )
+    )
+
+    return resolvers
+
+
+def _resolve_import_chain(
+    module: str, source_path: str, resolvers: list[callable],
+) -> list[str]:
+    """Try each resolver in order. First one that returns results wins."""
+    for resolver in resolvers:
+        targets = resolver(module, source_path)
+        if targets:
+            return targets
+    return []
 
 
 def _resolve_import(

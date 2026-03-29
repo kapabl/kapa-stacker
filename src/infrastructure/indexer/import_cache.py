@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sys
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
-from src.infrastructure.parsers.import_dispatcher import dispatch_parse_imports
-
 CACHE_FILE = ".cortex-cache/imports.json"
+_MAX_WORKERS = os.cpu_count() or 4
 
 
 def build_import_index(
@@ -26,35 +27,54 @@ def build_import_index(
     existing = _load_cache(cache_path)
     hashes = _compute_hashes(file_paths)
     result: dict[str, list[dict]] = {}
+    stale_files: list[str] = []
 
-    total_files = len(file_paths)
-    parsed_count = 0
-    cached_count = 0
-
-    for index, path in enumerate(file_paths, 1):
+    for path in file_paths:
         file_hash = hashes.get(path, "")
         cached = existing.get(path)
-
         if cached and cached.get("hash") == file_hash:
             result[path] = cached["imports"]
-            cached_count += 1
-            continue
+        else:
+            stale_files.append(path)
 
-        source = _read_file(path)
-        if not source:
-            continue
+    cached_count = len(result)
+    total_files = len(file_paths)
 
-        imports = dispatch_parse_imports(path, source)
-        result[path] = [
-            {"raw": imp.raw, "module": imp.module, "kind": imp.kind}
-            for imp in imports
-        ]
-        parsed_count += 1
+    if stale_files:
+        fresh = _parse_imports_parallel(stale_files)
+        result.update(fresh)
 
-        if index % 200 == 0 or index == total_files:
-            _report_progress(index, total_files, cached_count, parsed_count)
-
+    _report_progress(total_files, total_files, cached_count, len(stale_files))
     _save_cache(cache_path, result, hashes)
+    return result
+
+
+def _parse_imports_single(path: str) -> tuple[str, list[dict]]:
+    """Parse imports for a single file. Runs in worker process."""
+    from src.infrastructure.parsers.import_dispatcher import dispatch_parse_imports
+
+    source = _read_file(path)
+    if not source:
+        return path, []
+
+    imports = dispatch_parse_imports(path, source)
+    return path, [
+        {"raw": imp.raw, "module": imp.module, "kind": imp.kind}
+        for imp in imports
+    ]
+
+
+def _parse_imports_parallel(file_paths: list[str]) -> dict[str, list[dict]]:
+    """Parse imports in parallel using multiple processes."""
+    result: dict[str, list[dict]] = {}
+    with ProcessPoolExecutor(max_workers=_MAX_WORKERS) as pool:
+        futures = {pool.submit(_parse_imports_single, path): path for path in file_paths}
+        for future in as_completed(futures):
+            try:
+                path, imports = future.result()
+                result[path] = imports
+            except Exception:
+                pass
     return result
 
 

@@ -86,12 +86,13 @@ _FUNCTION_QUERIES: dict[str, str] = {
 }
 
 
-def extract_calls(file_path: str, source: str, language: str) -> list[CallSite]:
-    """Extract function call sites from source code."""
-    call_query = _CALL_QUERIES.get(language)
-    if not call_query:
-        return []
+_parser_cache: dict[str, tuple] = {}
 
+
+def _get_parser(language: str):
+    """Get cached tree-sitter parser and language for a given language."""
+    if language in _parser_cache:
+        return _parser_cache[language]
     try:
         import warnings
         import tree_sitter_languages
@@ -99,8 +100,22 @@ def extract_calls(file_path: str, source: str, language: str) -> list[CallSite]:
             warnings.simplefilter("ignore")
             parser = tree_sitter_languages.get_parser(language)
             ts_lang = tree_sitter_languages.get_language(language)
+        _parser_cache[language] = (parser, ts_lang)
+        return parser, ts_lang
     except (ImportError, Exception):
+        return None
+
+
+def extract_calls(file_path: str, source: str, language: str) -> list[CallSite]:
+    """Extract function call sites from source code."""
+    call_query = _CALL_QUERIES.get(language)
+    if not call_query:
         return []
+
+    cached = _get_parser(language)
+    if not cached:
+        return []
+    parser, ts_lang = cached
 
     tree = parser.parse(source.encode("utf-8"))
 

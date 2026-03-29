@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sys
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 from src.infrastructure.parsers.language_detector import detect_language
-from src.infrastructure.parsers.call_extractor import extract_calls
 
 CACHE_FILE = ".cortex-cache/calls.json"
+_MAX_WORKERS = os.cpu_count() or 4
 
 
 def build_call_index(
@@ -27,42 +29,62 @@ def build_call_index(
     existing = _load_cache(cache_path)
     hashes = _compute_hashes(file_paths)
     result: dict[str, list[dict]] = {}
-    total_files = len(file_paths)
-    parsed_count = 0
-    cached_count = 0
+    stale_files: list[str] = []
 
-    for index, path in enumerate(file_paths, 1):
+    for path in file_paths:
         file_hash = hashes.get(path, "")
         cached = existing.get(path)
-
         if cached and cached.get("hash") == file_hash:
             result[path] = cached["calls"]
-            cached_count += 1
-            continue
+        else:
+            stale_files.append(path)
 
-        language = detect_language(path)
-        if not language:
-            continue
+    cached_count = len(result)
+    total_files = len(file_paths)
 
-        source = _read_file(path)
-        if not source:
-            continue
+    if stale_files:
+        fresh = _parse_calls_parallel(stale_files)
+        result.update(fresh)
 
-        calls = extract_calls(path, source, language)
-        result[path] = [
-            {
-                "caller_function": call.caller_function,
-                "callee_name": call.callee_name,
-                "line": call.line,
-            }
-            for call in calls
-        ]
-        parsed_count += 1
-
-        if index % 200 == 0 or index == total_files:
-            _report_progress(index, total_files, cached_count, parsed_count)
-
+    _report_progress(total_files, total_files, cached_count, len(stale_files))
     _save_cache(cache_path, result, hashes)
+    return result
+
+
+def _parse_calls_single(path: str) -> tuple[str, list[dict]]:
+    """Parse calls for a single file. Runs in worker process."""
+    from src.infrastructure.parsers.call_extractor import extract_calls
+
+    language = detect_language(path)
+    if not language:
+        return path, []
+
+    source = _read_file(path)
+    if not source:
+        return path, []
+
+    calls = extract_calls(path, source, language)
+    return path, [
+        {
+            "caller_function": call.caller_function,
+            "callee_name": call.callee_name,
+            "line": call.line,
+        }
+        for call in calls
+    ]
+
+
+def _parse_calls_parallel(file_paths: list[str]) -> dict[str, list[dict]]:
+    """Parse calls in parallel using multiple processes."""
+    result: dict[str, list[dict]] = {}
+    with ProcessPoolExecutor(max_workers=_MAX_WORKERS) as pool:
+        futures = {pool.submit(_parse_calls_single, path): path for path in file_paths}
+        for future in as_completed(futures):
+            try:
+                path, calls = future.result()
+                result[path] = calls
+            except Exception:
+                pass
     return result
 
 

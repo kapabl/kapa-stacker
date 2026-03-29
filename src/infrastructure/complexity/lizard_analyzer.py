@@ -3,21 +3,44 @@
 from __future__ import annotations
 
 import os
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import lizard
 
 from src.domain.value_object.file_complexity import FileComplexity, FunctionComplexity
 
+_MAX_WORKERS = os.cpu_count() or 4
+
 
 def analyze_lizard(file_paths: list[str]) -> dict[str, FileComplexity]:
     """Run lizard on files for per-function complexity metrics."""
+    existing = [path for path in file_paths if os.path.exists(path)]
+    if len(existing) < 50:
+        return _analyze_sequential(existing)
+    return _analyze_parallel(existing)
+
+
+def _analyze_sequential(file_paths: list[str]) -> dict[str, FileComplexity]:
     metrics: dict[str, FileComplexity] = {}
     for path in file_paths:
-        if not os.path.exists(path):
-            continue
         result = _analyze_single(path)
         if result:
             metrics[path] = result
+    return metrics
+
+
+def _analyze_parallel(file_paths: list[str]) -> dict[str, FileComplexity]:
+    metrics: dict[str, FileComplexity] = {}
+    with ProcessPoolExecutor(max_workers=_MAX_WORKERS) as pool:
+        futures = {pool.submit(_analyze_single, path): path for path in file_paths}
+        for future in as_completed(futures):
+            path = futures[future]
+            try:
+                result = future.result()
+                if result:
+                    metrics[path] = result
+            except Exception:
+                pass
     return metrics
 
 
