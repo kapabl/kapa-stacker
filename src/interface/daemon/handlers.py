@@ -108,6 +108,39 @@ def handle_hotspots(params: dict) -> dict:
     }
 
 
+def handle_calls(params: dict) -> dict:
+    """Find call-graph impact for a symbol."""
+    from src.domain.service.graph_queries import find_call_impact
+
+    symbol = params.get("target")
+    if not symbol:
+        raise ValueError("Missing 'target' parameter (symbol name)")
+
+    store = _get_index_store()
+
+    def get_symbol_file(name):
+        files = store.get_files_defining_symbol(name)
+        return files[0] if files else None
+
+    result = find_call_impact(symbol, store.get_callers_of_symbol, get_symbol_file)
+    return {
+        "query": "call_impact",
+        "symbol": result.target_symbol,
+        "file": result.target_file,
+        "direct_callers": [
+            {"caller_file": chain.caller_file, "caller_function": chain.caller_function,
+             "line": chain.line}
+            for chain in result.direct_callers
+        ],
+        "transitive_callers": [
+            {"caller_file": chain.caller_file, "caller_function": chain.caller_function,
+             "line": chain.line}
+            for chain in result.transitive_callers
+        ],
+        "total_call_chains": result.total_call_chains,
+    }
+
+
 def handle_status(params: dict) -> dict:
     """Return daemon status."""
     store = _get_index_store()
@@ -116,6 +149,7 @@ def handle_status(params: dict) -> dict:
         "index_files": store.file_count if store else 0,
         "index_symbols": store.symbol_count if store else 0,
         "index_edges": store.edge_count if store else 0,
+        "index_calls": store.call_count if store else 0,
     }
 
 
@@ -145,6 +179,7 @@ def build_handler_map(server=None) -> dict:
         "impact": handle_impact,
         "deps": handle_deps,
         "hotspots": handle_hotspots,
+        "calls": handle_calls,
         "status": handle_status,
     }
     if server:
