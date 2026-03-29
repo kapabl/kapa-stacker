@@ -20,7 +20,14 @@ Constraints (configurable):
 Usage:
     python stacked_pr_analyzer.py [--base main] [--max-files 3] [--max-lines 200]
     python stacked_pr_analyzer.py --json
-    python stacked_pr_analyzer.py --visualize  # output DOT graph
+    python stacked_pr_analyzer.py --visualize       # DOT graph
+    python stacked_pr_analyzer.py --generate-plan   # create .stacked-pr-plan.json + shell script
+    python stacked_pr_analyzer.py --check-plan      # show plan progress
+    python stacked_pr_analyzer.py --run-plan         # execute plan interactively
+    python stacked_pr_analyzer.py --run-plan --step 5  # execute single step
+    python stacked_pr_analyzer.py --run-plan --dry-run # preview without executing
+    python stacked_pr_analyzer.py --print-commands   # print copy-pasteable git commands
+    python stacked_pr_analyzer.py --shell-script     # output executable bash script
 """
 
 from __future__ import annotations
@@ -44,7 +51,20 @@ from lang_parsers import (
     FileComplexity,
     parse_imports,
     parse_symbols,
-    analyze_complexity_scc,
+    analyze_complexity_best,
+)
+from plan_executor import (
+    StackedPRPlan,
+    generate_plan,
+    check_plan,
+    execute_plan,
+    print_commands,
+    generate_shell_script,
+    PLAN_FILE,
+)
+from extract_pr import (
+    create_extraction_plan,
+    print_extraction_plan,
 )
 
 
@@ -250,7 +270,7 @@ def enrich_files(files: list[ChangedFile]) -> None:
     paths = [f.path for f in files if not f.is_text_or_docs]
     existing_paths = [p for p in paths if os.path.exists(p)]
     if existing_paths:
-        metrics = analyze_complexity_scc(existing_paths)
+        metrics = analyze_complexity_best(existing_paths)
         for f in files:
             if f.path in metrics:
                 f.complexity = metrics[f.path]
@@ -399,6 +419,51 @@ def _label_for_files(files: list[ChangedFile]) -> str:
     return "cross-module changes"
 
 
+# ---------------------------------------------------------------------------
+# Test file pairing
+# ---------------------------------------------------------------------------
+
+# Patterns: test_foo.py ↔ foo.py, foo_test.go ↔ foo.go, Foo.test.tsx ↔ Foo.tsx
+_TEST_PATTERNS = [
+    # Python: test_foo.py ↔ foo.py
+    (re.compile(r"^(.*/)?test_(.+)\.py$"), r"\1\2.py"),
+    (re.compile(r"^(.*/)?(.+)_test\.py$"), r"\1\2.py"),
+    # Go: foo_test.go ↔ foo.go
+    (re.compile(r"^(.*/)?(.+)_test\.go$"), r"\1\2.go"),
+    # JS/TS: foo.test.ts ↔ foo.ts, foo.spec.ts ↔ foo.ts
+    (re.compile(r"^(.*/)?(.+)\.(test|spec)\.(tsx?|jsx?)$"), r"\1\2.\4"),
+    # Java/Kotlin: FooTest.java ↔ Foo.java
+    (re.compile(r"^(.*/)?(.+)Test\.(java|kt|kts)$"), r"\1\2.\3"),
+    # C++: foo_test.cpp ↔ foo.cpp, test_foo.cpp ↔ foo.cpp
+    (re.compile(r"^(.*/)?(.+)_test\.(cpp|cc|cxx)$"), r"\1\2.\3"),
+    (re.compile(r"^(.*/)?test_(.+)\.(cpp|cc|cxx)$"), r"\1\2.\3"),
+    # Rust: mod tests in same file (handled by module), but also test files
+    (re.compile(r"^(.*/)tests/(.+)\.rs$"), r"\1src/\2.rs"),
+    # __tests__ directory (JS/TS convention)
+    (re.compile(r"^(.*/)?__tests__/(.+)\.(tsx?|jsx?)$"), r"\1\2.\3"),
+]
+
+
+def find_test_pairs(files: list[ChangedFile]) -> dict[str, str]:
+    """
+    Find test→implementation file pairs among changed files.
+    Returns {test_path: impl_path} for pairs where both exist in the changeset.
+    """
+    all_paths = {f.path for f in files}
+    pairs: dict[str, str] = {}
+
+    for f in files:
+        for pattern, replacement in _TEST_PATTERNS:
+            m = pattern.match(f.path)
+            if m:
+                impl_path = pattern.sub(replacement, f.path)
+                if impl_path in all_paths and impl_path != f.path:
+                    pairs[f.path] = impl_path
+                break  # first match wins
+
+    return pairs
+
+
 def partition_into_prs(
     G: nx.DiGraph,
     files: list[ChangedFile],
@@ -410,27 +475,33 @@ def partition_into_prs(
     Partition the dependency graph into PR-sized groups.
 
     Algorithm:
-      1. Topological sort (dep-free files first)
-      2. Greedy bin-packing with affinity-aware neighbor preference
-      3. Co-changing files get priority to land in same PR
+      1. Find test↔implementation pairs (hard constraint: keep together)
+      2. Topological sort (dep-free files first)
+      3. Greedy bin-packing with affinity-aware neighbor preference
+      4. Co-changing files get priority to land in same PR
     """
     if not files:
         return []
 
     file_map = {f.path: f for f in files}
 
+    # Test file pairing — these must land in the same PR
+    test_pairs = find_test_pairs(files)
+    # Reverse map: impl → [test_paths]
+    impl_to_tests: dict[str, list[str]] = defaultdict(list)
+    for test_path, impl_path in test_pairs.items():
+        impl_to_tests[impl_path].append(test_path)
+
     # Topological ordering — depended-upon files come first
     try:
         topo_order = list(nx.topological_sort(G))
     except nx.NetworkXUnfeasible:
-        # Fallback: sort by in-degree (most depended-upon first)
         topo_order = sorted(G.nodes(), key=lambda n: -G.in_degree(n))
 
     # Add files not in graph
     all_paths = {f.path for f in files}
     graph_paths = set(topo_order)
     remaining_paths = all_paths - graph_paths
-    # Sort remaining: docs first, then by module, then name
     remaining_sorted = sorted(
         remaining_paths,
         key=lambda p: (not file_map[p].is_text_or_docs, file_map[p].module_key, p),
@@ -499,6 +570,17 @@ def partition_into_prs(
 
         current_pr.files.append(f)
         assigned.add(path)
+
+        # Pull in paired test files (hard constraint)
+        for test_path in impl_to_tests.get(path, []):
+            if test_path not in assigned and test_path in file_map:
+                current_pr.files.append(file_map[test_path])
+                assigned.add(test_path)
+        # Also pull impl if this is a test file
+        impl_path = test_pairs.get(path)
+        if impl_path and impl_path not in assigned and impl_path in file_map:
+            current_pr.files.append(file_map[impl_path])
+            assigned.add(impl_path)
 
     for pr in prs:
         pr.title = f"PR #{pr.index}: {_label_for_files(pr.files)}"
@@ -752,18 +834,8 @@ def print_report_json(prs: list[ProposedPR], base: str, branch: str, G: nx.DiGra
 # Main
 # ---------------------------------------------------------------------------
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Analyze a branch and propose stacked PRs with merge strategies.",
-    )
-    parser.add_argument("--base", default="main", help="Base branch (default: main)")
-    parser.add_argument("--max-files", type=int, default=3, help="Soft max files per PR")
-    parser.add_argument("--max-lines", type=int, default=200, help="Max code lines per PR (docs exempt)")
-    parser.add_argument("--json", action="store_true", help="JSON output")
-    parser.add_argument("--visualize", action="store_true", help="Output DOT graph to stdout")
-    parser.add_argument("--dot-file", type=str, help="Write DOT graph to file")
-    args = parser.parse_args()
-
+def _run_analysis(args) -> tuple[str, str, list[ChangedFile], nx.DiGraph, list, dict]:
+    """Shared analysis logic for all modes."""
     branch = current_branch()
     base_ref = resolve_base(args.base)
 
@@ -789,6 +861,141 @@ def main() -> None:
     compute_risk_scores(prs)
     assign_merge_strategies(prs)
 
+    return branch, base_ref, files, G, prs, affinity
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Analyze a branch and propose stacked PRs with merge strategies.",
+    )
+    # Analysis options
+    parser.add_argument("--base", default="main", help="Base branch (default: main)")
+    parser.add_argument("--max-files", type=int, default=3, help="Soft max files per PR")
+    parser.add_argument("--max-lines", type=int, default=200, help="Max code lines per PR (docs exempt)")
+
+    # Output modes
+    parser.add_argument("--json", action="store_true", help="JSON output")
+    parser.add_argument("--visualize", action="store_true", help="Output DOT graph to stdout")
+    parser.add_argument("--dot-file", type=str, help="Write DOT graph to file")
+
+    # Plan generation & execution
+    parser.add_argument("--generate-plan", action="store_true",
+                        help="Generate execution plan (.stacked-pr-plan.json + commands)")
+    parser.add_argument("--check-plan", action="store_true",
+                        help="Show current plan status and next steps")
+    parser.add_argument("--run-plan", action="store_true",
+                        help="Execute the plan (all pending steps)")
+    parser.add_argument("--step", type=int, default=None,
+                        help="Execute only this step number (with --run-plan)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Preview commands without executing (with --run-plan)")
+    parser.add_argument("--no-interactive", action="store_true",
+                        help="Don't prompt before each PR (with --run-plan)")
+    parser.add_argument("--print-commands", action="store_true",
+                        help="Print all git commands (copy-pasteable)")
+    parser.add_argument("--shell-script", action="store_true",
+                        help="Output a complete bash script")
+    parser.add_argument("--no-gh", action="store_true",
+                        help="Skip GitHub PR creation commands")
+    parser.add_argument("--plan-file", type=str, default=PLAN_FILE,
+                        help=f"Plan file path (default: {PLAN_FILE})")
+
+    # Extraction mode
+    parser.add_argument("--extract", type=str, default=None, metavar="PROMPT",
+                        help='Extract subset into a PR: --extract "gradle init-script files"')
+    parser.add_argument("--extract-branch", type=str, default=None,
+                        help="Custom branch name for extraction")
+    parser.add_argument("--no-deps", action="store_true",
+                        help="Don't pull in dependency files during extraction")
+
+    args = parser.parse_args()
+
+    # ── Check plan (no analysis needed) ──
+    if args.check_plan:
+        plan = StackedPRPlan.load(args.plan_file)
+        check_plan(plan)
+        return
+
+    # ── Run plan (no analysis needed) ──
+    if args.run_plan:
+        plan = StackedPRPlan.load(args.plan_file)
+        success = execute_plan(
+            plan,
+            step_id=args.step,
+            dry_run=args.dry_run,
+            interactive=not args.no_interactive,
+            plan_path=args.plan_file,
+        )
+        sys.exit(0 if success else 1)
+
+    # ── Extraction mode (prompt-driven) ──
+    if args.extract:
+        branch = current_branch()
+        base_ref = resolve_base(args.base)
+        print(f"Extracting from {branch} vs {base_ref}...", file=sys.stderr)
+
+        files = diff_stat(base_ref)
+        if not files:
+            print(f"No changes found between {base_ref} and HEAD.")
+            sys.exit(0)
+
+        enrich_files(files)
+        G = build_dependency_graph(files)
+
+        plan = create_extraction_plan(
+            prompt=args.extract,
+            all_files=files,
+            G=G,
+            source_branch=branch,
+            base_branch=args.base,
+            branch_name=args.extract_branch,
+            include_deps=not args.no_deps,
+        )
+        print_extraction_plan(plan)
+
+        if not plan.all_files:
+            print(f"\n  {YELLOW}No files matched the prompt. Try a different query.{RESET}")
+            sys.exit(1)
+
+        return
+
+    # ── All other modes require analysis ──
+    branch, base_ref, files, G, prs, affinity = _run_analysis(args)
+
+    # ── Generate plan ──
+    if args.generate_plan or args.print_commands or args.shell_script:
+        plan = generate_plan(
+            prs=prs,
+            source_branch=branch,
+            base_branch=args.base,
+            repo_root=os.getcwd(),
+            create_prs=not args.no_gh,
+        )
+        plan.save(args.plan_file)
+        print(f"Plan saved to {args.plan_file}", file=sys.stderr)
+
+        if args.shell_script:
+            print(generate_shell_script(plan, include_gh=not args.no_gh))
+        elif args.print_commands:
+            print_commands(plan, include_gh=not args.no_gh)
+        else:
+            # Default: show report + commands + mermaid
+            print_report(prs, args.base, branch, len(files), G)
+            print()
+            print_commands(plan, include_gh=not args.no_gh)
+            if plan.mermaid:
+                print(f"\n  {BOLD}Mermaid Diagram (paste into GitHub):{RESET}\n")
+                for line in plan.mermaid.splitlines():
+                    print(f"  {line}")
+                print()
+            print(f"  {BOLD}Next steps:{RESET}")
+            print(f"    Review:  {CYAN}python stacked_pr_analyzer.py --check-plan{RESET}")
+            print(f"    Execute: {CYAN}python stacked_pr_analyzer.py --run-plan{RESET}")
+            print(f"    Dry run: {CYAN}python stacked_pr_analyzer.py --run-plan --dry-run{RESET}")
+            print()
+        return
+
+    # ── Visualization ──
     if args.visualize or args.dot_file:
         dot = generate_dot(prs)
         if args.dot_file:
@@ -799,6 +1006,7 @@ def main() -> None:
         if not args.json and not args.visualize:
             return
 
+    # ── Default output ──
     if args.json:
         print_report_json(prs, args.base, branch, G)
     elif not args.visualize:

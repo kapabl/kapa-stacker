@@ -48,14 +48,30 @@ class SymbolInfo:
 
 
 @dataclass
+class FunctionComplexity:
+    """Per-function complexity from lizard."""
+    name: str
+    start_line: int
+    end_line: int
+    cyclomatic: int
+    cognitive: int         # cognitive complexity (lizard extension)
+    token_count: int
+    parameter_count: int
+    length: int            # lines of code
+
+
+@dataclass
 class FileComplexity:
-    """Complexity metrics from scc for a single file."""
+    """Complexity metrics for a single file."""
     language: str
     lines: int
     code: int
     comments: int
     blanks: int
-    complexity: int   # cyclomatic complexity estimate
+    complexity: int                                       # cyclomatic total
+    functions: list[FunctionComplexity] = field(default_factory=list)
+    avg_cyclomatic: float = 0.0
+    max_cyclomatic: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -447,6 +463,86 @@ def analyze_complexity_scc_dir(directory: str = ".") -> dict[str, FileComplexity
 
 
 # ---------------------------------------------------------------------------
+# Lizard — function-level cyclomatic + cognitive complexity
+# ---------------------------------------------------------------------------
+
+def analyze_complexity_lizard(file_paths: list[str]) -> dict[str, FileComplexity]:
+    """
+    Run lizard on files for function-level complexity metrics.
+    Falls back to scc if lizard is not installed.
+
+    lizard gives us:
+      - Per-function cyclomatic complexity
+      - Function length, parameter count, token count
+      - Works for C/C++, Java, Python, Go, Rust, JS/TS, Kotlin, and more
+    """
+    if not file_paths:
+        return {}
+
+    try:
+        import lizard
+    except ImportError:
+        # Fall back to scc
+        return analyze_complexity_scc(file_paths)
+
+    metrics: dict[str, FileComplexity] = {}
+
+    for path in file_paths:
+        if not os.path.exists(path):
+            continue
+        try:
+            analysis = lizard.analyze_file(path)
+        except Exception:
+            continue
+
+        functions: list[FunctionComplexity] = []
+        total_cyclomatic = 0
+
+        for func in analysis.function_list:
+            cc = func.cyclomatic_complexity
+            total_cyclomatic += cc
+            functions.append(FunctionComplexity(
+                name=func.name,
+                start_line=func.start_line,
+                end_line=func.end_line,
+                cyclomatic=cc,
+                cognitive=0,  # lizard doesn't compute cognitive by default
+                token_count=func.token_count,
+                parameter_count=len(func.parameters),
+                length=func.nloc,
+            ))
+
+        avg_cc = total_cyclomatic / len(functions) if functions else 0
+        max_cc = max((f.cyclomatic for f in functions), default=0)
+
+        metrics[path] = FileComplexity(
+            language=analysis.filename.rsplit(".", 1)[-1] if "." in analysis.filename else "",
+            lines=analysis.nloc,
+            code=analysis.nloc,
+            comments=0,
+            blanks=0,
+            complexity=total_cyclomatic,
+            functions=functions,
+            avg_cyclomatic=round(avg_cc, 1),
+            max_cyclomatic=max_cc,
+        )
+
+    return metrics
+
+
+def analyze_complexity_best(file_paths: list[str]) -> dict[str, FileComplexity]:
+    """Use the best available complexity analyzer: lizard > scc."""
+    try:
+        import lizard  # noqa: F401
+        return analyze_complexity_lizard(file_paths)
+    except ImportError:
+        return analyze_complexity_scc(file_paths)
+
+
+import os  # needed by lizard functions above
+
+
+# ---------------------------------------------------------------------------
 # Python AST (stdlib, always available)
 # ---------------------------------------------------------------------------
 
@@ -607,6 +703,197 @@ def _parse_starlark_regex(source: str) -> list[ImportInfo]:
 
 
 # ---------------------------------------------------------------------------
+# Gradle (Groovy DSL) — build.gradle
+# ---------------------------------------------------------------------------
+
+# implementation 'com.google.guava:guava:31.1-jre'
+# implementation "com.google.guava:guava:$guavaVersion"
+# api project(':core')
+# classpath "com.android.tools.build:gradle:7.0.0"
+# apply plugin: 'java'
+# apply from: 'other.gradle'
+_GRADLE_DEP_RE = re.compile(
+    r"""(?:implementation|api|compileOnly|runtimeOnly|testImplementation|"""
+    r"""testRuntimeOnly|classpath|annotationProcessor)\s*"""
+    r"""[\(]?\s*['"]([\w.:@\-/\${}]+)['"]\s*[\)]?""",
+    re.MULTILINE,
+)
+_GRADLE_PROJECT_RE = re.compile(
+    r"""project\s*\(\s*['"]([:.\w\-/]+)['"]\s*\)""", re.MULTILINE,
+)
+_GRADLE_APPLY_FROM_RE = re.compile(
+    r"""apply\s+from:\s*['"]([\w./\-]+)['"]""", re.MULTILINE,
+)
+_GRADLE_PLUGIN_RE = re.compile(
+    r"""(?:apply\s+plugin:\s*['"]([\w.\-]+)['"]|id\s*\(?\s*['"]([\w.\-]+)['"]\s*\)?)""",
+    re.MULTILINE,
+)
+_GRADLE_BUILDSCRIPT_CLASSPATH_RE = re.compile(
+    r"""classpath\s*[\(]?\s*['"]([\w.:@\-/]+)['"]\s*[\)]?""", re.MULTILINE,
+)
+
+
+def _parse_gradle_groovy_regex(source: str) -> list[ImportInfo]:
+    results, seen = [], set()
+
+    # Dependencies
+    for m in _GRADLE_DEP_RE.finditer(source):
+        dep = m.group(1)
+        # Normalize: com.google.guava:guava:31.1-jre → com.google.guava:guava
+        parts = dep.split(":")
+        mod = ":".join(parts[:2]) if len(parts) >= 2 else dep
+        if mod not in seen:
+            seen.add(mod)
+            results.append(ImportInfo(raw=dep, module=mod, kind="dependency"))
+
+    # Project dependencies: project(':core') → :core
+    for m in _GRADLE_PROJECT_RE.finditer(source):
+        proj = m.group(1)
+        if proj not in seen:
+            seen.add(proj)
+            results.append(ImportInfo(raw=proj, module=proj, kind="project"))
+
+    # apply from
+    for m in _GRADLE_APPLY_FROM_RE.finditer(source):
+        path = m.group(1)
+        if path not in seen:
+            seen.add(path)
+            results.append(ImportInfo(raw=path, module=path, kind="script"))
+
+    # Plugins
+    for m in _GRADLE_PLUGIN_RE.finditer(source):
+        plugin = m.group(1) or m.group(2)
+        if plugin and plugin not in seen:
+            seen.add(plugin)
+            results.append(ImportInfo(raw=plugin, module=plugin, kind="plugin"))
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Gradle Kotlin DSL — build.gradle.kts, settings.gradle.kts
+# ---------------------------------------------------------------------------
+
+# implementation("com.google.guava:guava:31.1-jre")
+# api(project(":core"))
+# plugins { id("org.jetbrains.kotlin.jvm") version "1.8.0" }
+# include(":app", ":core", ":utils")
+_GRADLE_KTS_DEP_RE = re.compile(
+    r"""(?:implementation|api|compileOnly|runtimeOnly|testImplementation|"""
+    r"""testRuntimeOnly|classpath|annotationProcessor)\s*\(\s*"""
+    r"""['"]([\w.:@\-/]+)['"]\s*\)""",
+    re.MULTILINE,
+)
+_GRADLE_KTS_PROJECT_RE = re.compile(
+    r"""project\s*\(\s*['"]([\w:.\-]+)['"]\s*\)""", re.MULTILINE,
+)
+_GRADLE_KTS_PLUGIN_RE = re.compile(
+    r"""id\s*\(\s*['"]([\w.\-]+)['"]\s*\)""", re.MULTILINE,
+)
+_GRADLE_KTS_INCLUDE_RE = re.compile(
+    r"""include\s*\((.*?)\)""", re.DOTALL,
+)
+_GRADLE_KTS_STRING_RE = re.compile(r"""['"]([\w:.\-/]+)['"]""")
+_GRADLE_KTS_APPLY_RE = re.compile(
+    r"""apply\s*\(\s*from\s*=\s*['"]([\w./\-]+)['"]\s*\)""", re.MULTILINE,
+)
+
+
+def _parse_gradle_kts_regex(source: str) -> list[ImportInfo]:
+    results, seen = [], set()
+
+    # Dependencies
+    for m in _GRADLE_KTS_DEP_RE.finditer(source):
+        dep = m.group(1)
+        parts = dep.split(":")
+        mod = ":".join(parts[:2]) if len(parts) >= 2 else dep
+        if mod not in seen:
+            seen.add(mod)
+            results.append(ImportInfo(raw=dep, module=mod, kind="dependency"))
+
+    # Project deps
+    for m in _GRADLE_KTS_PROJECT_RE.finditer(source):
+        proj = m.group(1)
+        if proj not in seen:
+            seen.add(proj)
+            results.append(ImportInfo(raw=proj, module=proj, kind="project"))
+
+    # Plugins
+    for m in _GRADLE_KTS_PLUGIN_RE.finditer(source):
+        plugin = m.group(1)
+        if plugin not in seen:
+            seen.add(plugin)
+            results.append(ImportInfo(raw=plugin, module=plugin, kind="plugin"))
+
+    # include(":app", ":core")  — settings.gradle.kts
+    for block in _GRADLE_KTS_INCLUDE_RE.finditer(source):
+        for sm in _GRADLE_KTS_STRING_RE.finditer(block.group(1)):
+            proj = sm.group(1)
+            if proj not in seen:
+                seen.add(proj)
+                results.append(ImportInfo(raw=proj, module=proj, kind="project"))
+
+    # apply(from = "...")
+    for m in _GRADLE_KTS_APPLY_RE.finditer(source):
+        path = m.group(1)
+        if path not in seen:
+            seen.add(path)
+            results.append(ImportInfo(raw=path, module=path, kind="script"))
+
+    # Also parse Kotlin imports (the file can have import statements)
+    results.extend(_parse_kotlin_regex(source))
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# BXL (Buck Extension Language) — .bxl files
+# ---------------------------------------------------------------------------
+
+# BXL is a Starlark dialect for Buck2 with additional built-ins:
+#   bxl.main(), ctx.analysis(), ctx.target_universe(), etc.
+# load() statements are the main dependency mechanism
+_BXL_LOAD_RE = re.compile(r'load\s*\(\s*"([^"]+)"', re.MULTILINE)
+# BXL-specific: target patterns in strings
+_BXL_TARGET_RE = re.compile(r'"(//[\w/.\-]+(?::[\w.\-]+)?)"', re.MULTILINE)
+# ctx.lazy.* references
+_BXL_LAZY_RE = re.compile(r'ctx\.lazy\.([a-zA-Z_]\w*)', re.MULTILINE)
+
+
+def _parse_bxl_regex(source: str) -> list[ImportInfo]:
+    results, seen = [], set()
+
+    for m in _BXL_LOAD_RE.finditer(source):
+        target = m.group(1)
+        if target not in seen:
+            seen.add(target)
+            results.append(ImportInfo(raw=target, module=target, kind="load"))
+
+    for m in _BXL_TARGET_RE.finditer(source):
+        target = m.group(1)
+        if target not in seen:
+            seen.add(target)
+            results.append(ImportInfo(raw=target, module=target, kind="target"))
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Groovy — .groovy files (non-Gradle)
+# ---------------------------------------------------------------------------
+
+_GROOVY_IMPORT_RE = re.compile(
+    r"^\s*import\s+(?:static\s+)?([\w.]+)\s*;?", re.MULTILINE,
+)
+
+def _parse_groovy_regex(source: str) -> list[ImportInfo]:
+    return [
+        ImportInfo(raw=m.group(1), module=m.group(1), kind="package")
+        for m in _GROOVY_IMPORT_RE.finditer(source)
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Module normalization
 # ---------------------------------------------------------------------------
 
@@ -627,28 +914,54 @@ def _normalize_module(raw: str, lang: str) -> str:
 # ---------------------------------------------------------------------------
 
 _EXT_TO_LANG: dict[str, str] = {
+    # Python
     ".py": "python", ".pyi": "python",
+    # C / C++
     ".c": "c", ".h": "c",
     ".cc": "cpp", ".cpp": "cpp", ".cxx": "cpp", ".hpp": "cpp", ".hxx": "cpp",
+    # Java
     ".java": "java",
+    # Kotlin
     ".kt": "kotlin", ".kts": "kotlin",
+    # Go
     ".go": "go",
+    # Rust
     ".rs": "rust",
+    # JavaScript / TypeScript
     ".js": "javascript", ".jsx": "javascript", ".mjs": "javascript", ".cjs": "javascript",
     ".ts": "typescript", ".tsx": "typescript",
+    # CMake
     ".cmake": "cmake",
+    # Starlark / Bazel
     ".bzl": "starlark", ".star": "starlark",
+    # BXL (Buck Extension Language)
+    ".bxl": "bxl",
+    # Groovy
+    ".groovy": "groovy",
+    # Gradle Groovy DSL (handled by filename, but .gradle extension too)
+    ".gradle": "gradle_groovy",
 }
 
 _FILENAME_TO_LANG: dict[str, str] = {
+    # CMake
     "CMakeLists.txt": "cmake",
+    # Buck2
     "BUCK": "buck2", "TARGETS": "buck2",
-    "BUILD": "starlark", "BUILD.bazel": "starlark",
+    # Bazel / Starlark
+    "BUILD": "starlark", "BUILD.bazel": "starlark", "WORKSPACE": "starlark",
+    "WORKSPACE.bazel": "starlark",
+    # Gradle
+    "build.gradle": "gradle_groovy",
+    "settings.gradle": "gradle_groovy",
+    "build.gradle.kts": "gradle_kts",
+    "settings.gradle.kts": "gradle_kts",
+    "gradle.properties": None,  # no imports to parse
+    "buildSrc/build.gradle.kts": "gradle_kts",
 }
 
 # Regex fallback per language
 _REGEX_PARSERS: dict[str, callable] = {
-    "python": _parse_python_ast,  # ast module IS the fallback for Python
+    "python": _parse_python_ast,
     "c": _parse_cpp_regex,
     "cpp": _parse_cpp_regex,
     "java": _parse_java_regex,
@@ -660,6 +973,10 @@ _REGEX_PARSERS: dict[str, callable] = {
     "cmake": _parse_cmake_regex,
     "buck2": _parse_buck2_regex,
     "starlark": _parse_starlark_regex,
+    "bxl": _parse_bxl_regex,
+    "gradle_groovy": _parse_gradle_groovy_regex,
+    "gradle_kts": _parse_gradle_kts_regex,
+    "groovy": _parse_groovy_regex,
 }
 
 
@@ -670,9 +987,17 @@ _REGEX_PARSERS: dict[str, callable] = {
 def _detect_lang(file_path: str) -> str | None:
     """Detect language from file path."""
     p = Path(file_path)
+
+    # Check exact filename first
     lang = _FILENAME_TO_LANG.get(p.name)
-    if lang:
-        return lang
+    if lang is not None:
+        return lang if lang else None
+
+    # Handle compound extensions: .gradle.kts, .test.ts, etc.
+    suffixes = "".join(p.suffixes).lower()
+    if suffixes.endswith(".gradle.kts"):
+        return "gradle_kts"
+
     return _EXT_TO_LANG.get(p.suffix.lower())
 
 
