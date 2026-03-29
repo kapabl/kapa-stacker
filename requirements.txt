@@ -1,0 +1,3 @@
+networkx>=3.0
+tree-sitter-languages>=1.10.0
+lizard>=1.17.0
