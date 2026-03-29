@@ -12,6 +12,7 @@ from src.infrastructure.indexer.index_store import (
 from src.infrastructure.parsers.language_detector import detect_language
 from src.infrastructure.parsers.import_dispatcher import dispatch_parse_imports
 from src.infrastructure.parsers.multi_lang_parser import MultiLangSymbolExtractor
+from src.infrastructure.complexity.lizard_analyzer import analyze_lizard
 
 _SOURCE_EXTENSIONS = {
     ".py", ".pyi", ".c", ".h", ".cc", ".cpp", ".cxx", ".hpp",
@@ -72,11 +73,17 @@ def index_file(store: IndexStore, file_path: str) -> None:
     file_hash = compute_file_hash(file_path)
     line_count = source.count("\n") + 1
 
+    complexity = 0
+    metrics = analyze_lizard([file_path])
+    if file_path in metrics:
+        complexity = metrics[file_path].complexity
+
     store.add_file(FileEntry(
         path=file_path,
         language=language,
         file_hash=file_hash,
         lines=line_count,
+        complexity=complexity,
     ))
 
     # Parse symbols
@@ -104,14 +111,17 @@ def index_file(store: IndexStore, file_path: str) -> None:
 
 
 def find_source_files(root: str = ".") -> list[str]:
-    """Walk the repo and find all source files."""
+    """Walk the repo and find all source files. Paths normalized to relative."""
     files: list[str] = []
+    root_path = Path(root).resolve()
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [directory for directory in dirnames if directory not in _SKIP_DIRS]
         for name in filenames:
             ext = Path(name).suffix.lower()
             if ext in _SOURCE_EXTENSIONS:
-                files.append(os.path.join(dirpath, name))
+                full_path = Path(os.path.join(dirpath, name)).resolve()
+                relative = str(full_path.relative_to(root_path))
+                files.append(relative)
     return files
 
 

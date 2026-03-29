@@ -95,6 +95,98 @@ def _cmd_index(args):
     index_repo()
 
 
+def _cmd_scan(args):
+    """Pure repo analysis — hotspots, deps, impact. No PR splitting."""
+    import json as json_mod
+    from src.infrastructure.indexer.incremental_indexer import build_full
+    from src.infrastructure.indexer.index_store import IndexStore
+    from src.domain.service.graph_queries import find_impact, find_deps, find_hotspots
+
+    cache_path = ".cortex-cache/index.msgpack"
+
+    print(f"  {BOLD}Scanning repo...{RESET}", file=sys.stderr)
+    if Path(cache_path).exists():
+        store = IndexStore.load(cache_path)
+        print(f"  Loaded index: {store.file_count} files", file=sys.stderr)
+    else:
+        store = build_full()
+        store.save(cache_path)
+        print(f"  Built index: {store.file_count} files", file=sys.stderr)
+
+    if args.hotspots:
+        results = find_hotspots(
+            list(store.files.keys()),
+            get_complexity=lambda path: store.files[path].complexity if path in store.files else 0,
+            get_dependents=store.get_dependents,
+            limit=args.limit,
+        )
+        if args.json:
+            data = [{"path": entry.path, "complexity": entry.complexity,
+                      "dependents": entry.dependent_count, "score": round(entry.score, 1)}
+                     for entry in results]
+            print(json_mod.dumps(data, indent=2))
+        else:
+            print(f"\n  {BOLD}Hotspots (complexity × dependents):{RESET}")
+            for index, entry in enumerate(results, 1):
+                print(f"  {index:3d}. {entry.path}  cx={entry.complexity}  deps={entry.dependent_count}  score={entry.score:.0f}")
+            print()
+
+    elif args.impact:
+        result = find_impact(args.impact, store.get_dependents)
+        if args.json:
+            print(json_mod.dumps({
+                "target": result.target,
+                "direct": result.direct,
+                "transitive": result.transitive,
+                "total_affected": result.total_affected,
+            }, indent=2))
+        else:
+            print(f"\n  {BOLD}Impact of {CYAN}{result.target}{RESET}:")
+            print(f"  Direct ({len(result.direct)}):")
+            for path in result.direct:
+                print(f"    {path}")
+            if result.transitive:
+                print(f"  Transitive ({len(result.transitive)}):")
+                for path in result.transitive:
+                    print(f"    {path}")
+            print(f"\n  Total affected: {result.total_affected}")
+            print()
+
+    elif args.deps:
+        deps = find_deps(args.deps, store.get_dependencies)
+        if args.json:
+            print(json_mod.dumps({"target": args.deps, "dependencies": deps, "total": len(deps)}, indent=2))
+        else:
+            print(f"\n  {BOLD}Dependencies of {CYAN}{args.deps}{RESET}:")
+            for path in deps:
+                print(f"    {path}")
+            print(f"\n  Total: {len(deps)}")
+            print()
+
+    else:
+        # Default: repo overview
+        languages = {}
+        for file_entry in store.files.values():
+            languages[file_entry.language] = languages.get(file_entry.language, 0) + 1
+
+        if args.json:
+            print(json_mod.dumps({
+                "files": store.file_count,
+                "symbols": store.symbol_count,
+                "edges": store.edge_count,
+                "languages": languages,
+            }, indent=2))
+        else:
+            print(f"\n  {BOLD}Repo overview:{RESET}")
+            print(f"  Files   : {store.file_count}")
+            print(f"  Symbols : {store.symbol_count}")
+            print(f"  Edges   : {store.edge_count}")
+            print(f"  Languages:")
+            for lang, count in sorted(languages.items(), key=lambda item: item[1], reverse=True):
+                print(f"    {lang:15s} {count}")
+            print()
+
+
 def _cmd_analyze(args):
     """Analyze branch and propose stacked PRs."""
     _apply_branch_config(args)
@@ -240,6 +332,15 @@ def _parse_args():
     # ── index ──
     index_parser = subparsers.add_parser("index", help="Pre-compute caches")
     index_parser.set_defaults(func=_cmd_index)
+
+    # ── scan ──
+    scan_parser = subparsers.add_parser("scan", help="Pure repo analysis — hotspots, deps, impact")
+    scan_parser.add_argument("--hotspots", action="store_true", help="Rank files by complexity × dependents")
+    scan_parser.add_argument("--impact", type=str, metavar="FILE", help="Show files affected by changes to FILE")
+    scan_parser.add_argument("--deps", type=str, metavar="FILE", help="Show dependency chain of FILE")
+    scan_parser.add_argument("--limit", type=int, default=20, help="Max results for hotspots")
+    scan_parser.add_argument("--json", action="store_true", help="JSON output")
+    scan_parser.set_defaults(func=_cmd_scan)
 
     # ── analyze ──
     analyze_parser = subparsers.add_parser("analyze", help="Analyze branch, propose stacked PRs")
