@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from pathlib import Path
 
 from src.infrastructure.complexity.analyzer import LizardAnalyzer
@@ -29,7 +30,8 @@ def build_complexity_index(
     stale_files = []
     result: dict[str, dict] = {}
 
-    for path in file_paths:
+    total_files = len(file_paths)
+    for index, path in enumerate(file_paths, 1):
         file_hash = hashes.get(path, "")
         cached = existing.get(path)
 

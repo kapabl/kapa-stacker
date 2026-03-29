@@ -109,8 +109,8 @@ def handle_hotspots(params: dict) -> dict:
 
 
 def handle_calls(params: dict) -> dict:
-    """Find call-graph impact for a symbol."""
-    from src.domain.service.graph_queries import find_call_impact
+    """Find full symbol impact: call graph + file dependencies."""
+    from src.domain.service.graph_queries import find_symbol_impact
 
     symbol = params.get("target")
     if not symbol:
@@ -118,26 +118,21 @@ def handle_calls(params: dict) -> dict:
 
     store = _get_index_store()
 
-    def get_symbol_file(name):
-        files = store.get_files_defining_symbol(name)
-        return files[0] if files else None
+    files = store.get_files_defining_symbol(symbol)
+    if not files:
+        raise ValueError(f"Symbol not found in index: {symbol}")
+    target_file = files[0]
 
-    result = find_call_impact(symbol, store.get_callers_of_symbol, get_symbol_file)
+    result = find_symbol_impact(
+        symbol, target_file, store.get_callers, store.get_dependents,
+    )
     return {
-        "query": "call_impact",
+        "query": "symbol_impact",
         "symbol": result.target_symbol,
         "file": result.target_file,
-        "direct_callers": [
-            {"caller_file": chain.caller_file, "caller_function": chain.caller_function,
-             "line": chain.line}
-            for chain in result.direct_callers
-        ],
-        "transitive_callers": [
-            {"caller_file": chain.caller_file, "caller_function": chain.caller_function,
-             "line": chain.line}
-            for chain in result.transitive_callers
-        ],
-        "total_call_chains": result.total_call_chains,
+        "caller_files": result.caller_files,
+        "affected_files": result.affected_files,
+        "total_affected": result.total_affected,
     }
 
 

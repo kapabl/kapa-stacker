@@ -1,4 +1,4 @@
-"""Pre-compute and cache import graphs for all source files."""
+"""Pre-compute and cache raw call sites for all source files."""
 
 from __future__ import annotations
 
@@ -7,18 +7,19 @@ import json
 import sys
 from pathlib import Path
 
-from src.infrastructure.parsers.import_dispatcher import dispatch_parse_imports
+from src.infrastructure.parsers.language_detector import detect_language
+from src.infrastructure.parsers.call_extractor import extract_calls
 
-CACHE_FILE = ".cortex-cache/imports.json"
+CACHE_FILE = ".cortex-cache/calls.json"
 
 
-def build_import_index(
+def build_call_index(
     file_paths: list[str],
     root: str = ".",
 ) -> dict[str, list[dict]]:
     """
-    Parse imports for all files, cache the result.
-    Returns {file_path: [{raw, module, kind}, ...]}.
+    Extract call sites for all files, cache the result.
+    Returns {file_path: [{caller_function, callee_name, line}, ...]}.
     """
     cache_path = Path(root) / CACHE_FILE
     cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -26,7 +27,6 @@ def build_import_index(
     existing = _load_cache(cache_path)
     hashes = _compute_hashes(file_paths)
     result: dict[str, list[dict]] = {}
-
     total_files = len(file_paths)
     parsed_count = 0
     cached_count = 0
@@ -36,18 +36,26 @@ def build_import_index(
         cached = existing.get(path)
 
         if cached and cached.get("hash") == file_hash:
-            result[path] = cached["imports"]
+            result[path] = cached["calls"]
             cached_count += 1
+            continue
+
+        language = detect_language(path)
+        if not language:
             continue
 
         source = _read_file(path)
         if not source:
             continue
 
-        imports = dispatch_parse_imports(path, source)
+        calls = extract_calls(path, source, language)
         result[path] = [
-            {"raw": imp.raw, "module": imp.module, "kind": imp.kind}
-            for imp in imports
+            {
+                "caller_function": call.caller_function,
+                "callee_name": call.callee_name,
+                "line": call.line,
+            }
+            for call in calls
         ]
         parsed_count += 1
 
@@ -66,11 +74,12 @@ def _report_progress(index, total, cached, parsed):
         pass
 
 
-def load_import_cache(root: str = ".") -> dict[str, list[dict]] | None:
+def load_call_cache(root: str = ".") -> dict[str, list[dict]] | None:
+    """Load cached call sites if available."""
     cache_path = Path(root) / CACHE_FILE
     if cache_path.exists():
         data = json.loads(cache_path.read_text())
-        return {k: v.get("imports", []) for k, v in data.items()}
+        return {k: v.get("calls", []) for k, v in data.items()}
     return None
 
 
@@ -82,10 +91,10 @@ def _load_cache(path: Path) -> dict:
 
 def _save_cache(path: Path, result: dict, hashes: dict) -> None:
     data = {}
-    for file_path, imports in result.items():
+    for file_path, calls in result.items():
         data[file_path] = {
             "hash": hashes.get(file_path, ""),
-            "imports": imports,
+            "calls": calls,
         }
     path.write_text(json.dumps(data, indent=2))
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 from src.infrastructure.indexer.index_store import (
@@ -14,6 +15,9 @@ from src.infrastructure.parsers.import_dispatcher import dispatch_parse_imports
 from src.infrastructure.parsers.multi_lang_parser import MultiLangSymbolExtractor
 from src.infrastructure.complexity.lizard_analyzer import analyze_lizard
 from src.infrastructure.parsers.call_extractor import extract_calls
+from src.infrastructure.indexer.graph_builder import (
+    STORE_PATH, _build_module_index, _resolve_import,
+)
 
 _SOURCE_EXTENSIONS = {
     ".py", ".pyi", ".c", ".h", ".cc", ".cpp", ".cxx", ".hpp",
@@ -30,17 +34,37 @@ _SKIP_DIRS = {
 
 _symbol_extractor = MultiLangSymbolExtractor()
 
+GREEN = "\033[32m"
+CYAN = "\033[36m"
+DIM = "\033[2m"
+RESET = "\033[0m"
+
 
 def build_full(root: str = ".") -> IndexStore:
-    """Build a complete index from all source files in the repo."""
-    store = IndexStore()
-    file_paths = find_source_files(root)
+    """Load IndexStore from cache, or run full index_repo first."""
+    store_path = Path(root) / STORE_PATH
 
-    for file_path in file_paths:
-        index_file(store, file_path)
+    if store_path.exists():
+        store = IndexStore.load(str(store_path))
+        print(
+            f"  {GREEN}✓{RESET} Loaded index: {store.file_count} files, "
+            f"{store.symbol_count} symbols, {store.edge_count} edges, "
+            f"{store.call_count} calls",
+            file=sys.stderr,
+        )
+        return store
 
-    _build_edges(store)
-    _build_call_graph(store)
+    print(f"  {CYAN}No cached index — running full index...{RESET}", file=sys.stderr)
+    from src.infrastructure.indexer.index_all import index_repo
+    index_repo(root)
+
+    store = IndexStore.load(str(store_path))
+    print(
+        f"  {GREEN}✓{RESET} Index ready: {store.file_count} files, "
+        f"{store.symbol_count} symbols, {store.edge_count} edges, "
+        f"{store.call_count} calls",
+        file=sys.stderr,
+    )
     return store
 
 
@@ -135,20 +159,6 @@ def find_source_files(root: str = ".") -> list[str]:
     return files
 
 
-def _build_edges(store: IndexStore) -> None:
-    """Build dependency edges from imports → file definitions."""
-    module_index = _build_module_index(store)
-
-    for file_path, imports in store.imports.items():
-        for imp in imports:
-            target = _resolve_import(imp.module, file_path, module_index)
-            if target:
-                store.add_edge(EdgeEntry(
-                    source=file_path, target=target,
-                    kind="import", weight=1.0,
-                ))
-
-
 def _rebuild_edges_for_file(store: IndexStore, file_path: str) -> None:
     """Rebuild edges involving a specific file after update."""
     # Remove old edges for this file
@@ -181,61 +191,5 @@ def _rebuild_edges_for_file(store: IndexStore, file_path: str) -> None:
                 ))
 
 
-def _build_module_index(store: IndexStore) -> dict[str, str]:
-    """Map module-like keys to file paths."""
-    index: dict[str, str] = {}
-    for file_path in store.files:
-        mod = _path_to_module(file_path)
-        index[mod] = file_path
-        short = mod.rsplit(".", 1)[-1]
-        index.setdefault(short, file_path)
-    return index
 
 
-def _resolve_import(
-    module: str, source_path: str, module_index: dict[str, str],
-) -> str | None:
-    """Resolve an import module to a file path."""
-    normalized = module.replace("/", ".").replace("::", ".").lstrip(".")
-    for key, target in module_index.items():
-        if target == source_path:
-            continue
-        if normalized == key or normalized.endswith(f".{key}") or key.endswith(f".{normalized}"):
-            return target
-    return None
-
-
-def _path_to_module(path: str) -> str:
-    module_path = Path(path).with_suffix("")
-    return str(module_path).replace("/", ".").replace("\\", ".")
-
-
-def _build_call_graph(store: IndexStore) -> None:
-    """Resolve raw call sites to cross-file call edges."""
-    raw_calls = getattr(store, '_raw_calls', [])
-    if not raw_calls:
-        return
-
-    # Build symbol → (file, function_name) index
-    symbol_to_location: dict[str, tuple[str, str]] = {}
-    for file_path, symbol_list in store.symbols.items():
-        for symbol in symbol_list:
-            if symbol.kind in ("function", "class", "method", "symbol"):
-                symbol_to_location.setdefault(symbol.name, (file_path, symbol.name))
-
-    for call_site in raw_calls:
-        location = symbol_to_location.get(call_site.callee_name)
-        if not location:
-            continue
-        callee_file, callee_function = location
-        if callee_file == call_site.caller_file:
-            continue  # skip intra-file calls
-        store.add_call(CallEntry(
-            caller_file=call_site.caller_file,
-            caller_function=call_site.caller_function,
-            callee_file=callee_file,
-            callee_function=callee_function,
-            line=call_site.line,
-        ))
-
-    del store._raw_calls

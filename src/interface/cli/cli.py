@@ -96,123 +96,141 @@ def _cmd_index(args):
     index_repo()
 
 
-def _cmd_scan(args):
-    """Pure repo analysis — hotspots, deps, impact. No PR splitting."""
-    import json as json_mod
+def _query_or_local(action: str, params: dict) -> dict:
+    """Route query through daemon (starting it if needed), or run locally with --no-daemon."""
+    from src.interface.daemon.client import send_query
+
+    _ensure_daemon()
+    response = send_query(action, params)
+    if not response.ok:
+        print(f"  {RED}{response.error}{RESET}")
+        sys.exit(1)
+    return response.data
+
+
+def _query_local(action: str, params: dict) -> dict:
+    """Run a query locally without the daemon."""
     from src.infrastructure.indexer.incremental_indexer import build_full
-    from src.infrastructure.indexer.index_store import IndexStore
-    from src.domain.service.graph_queries import find_impact, find_deps, find_hotspots, find_call_impact
+    from src.interface.daemon.handlers import (
+        handle_impact, handle_deps, handle_hotspots, handle_calls,
+        set_index_store,
+    )
 
-    cache_path = ".cortex-cache/index.msgpack"
+    store = build_full()
+    set_index_store(store)
 
-    print(f"  {BOLD}Scanning repo...{RESET}", file=sys.stderr)
-    if Path(cache_path).exists():
-        store = IndexStore.load(cache_path)
-        print(f"  Loaded index: {store.file_count} files", file=sys.stderr)
-    else:
-        store = build_full()
-        store.save(cache_path)
-        print(f"  Built index: {store.file_count} files", file=sys.stderr)
+    handlers = {
+        "impact": handle_impact,
+        "deps": handle_deps,
+        "hotspots": handle_hotspots,
+        "calls": handle_calls,
+    }
+    handler = handlers.get(action)
+    if not handler:
+        print(f"  {RED}Unknown query: {action}{RESET}")
+        sys.exit(1)
+    return handler(params)
+
+
+def _cmd_impact(args):
+    """What breaks if this file or symbol changes."""
+    import json as json_mod
 
     target = getattr(args, "file", None)
 
+    if not args.symbol and not target:
+        print(f"  {RED}Provide a file or --symbol NAME{RESET}")
+        sys.exit(1)
+
     if args.symbol:
-        # Call-graph impact for a symbol
-        def get_symbol_file(name):
-            files = store.get_files_defining_symbol(name)
-            return files[0] if files else None
-        result = find_call_impact(args.symbol, store.get_callers_of_symbol, get_symbol_file)
-        if args.json:
-            print(json_mod.dumps({
-                "query": "call_impact",
-                "symbol": result.target_symbol,
-                "file": result.target_file,
-                "direct_callers": [
-                    {"caller_file": chain.caller_file, "caller_function": chain.caller_function,
-                     "line": chain.line}
-                    for chain in result.direct_callers
-                ],
-                "transitive_callers": [
-                    {"caller_file": chain.caller_file, "caller_function": chain.caller_function,
-                     "line": chain.line}
-                    for chain in result.transitive_callers
-                ],
-                "total_call_chains": result.total_call_chains,
-            }, indent=2))
-        else:
-            print(f"\n  {BOLD}Call impact of {CYAN}{result.target_symbol}{RESET}" +
-                  (f" ({result.target_file})" if result.target_file else "") + ":")
-            if result.direct_callers:
-                print(f"  Direct callers ({len(result.direct_callers)}):")
-                for chain in result.direct_callers:
-                    print(f"    {chain.caller_function}() in {chain.caller_file}:{chain.line}")
-            if result.transitive_callers:
-                print(f"  Transitive callers ({len(result.transitive_callers)}):")
-                for chain in result.transitive_callers:
-                    print(f"    {chain.caller_function}() in {chain.caller_file}:{chain.line}")
-            print(f"\n  Total call chains: {result.total_call_chains}")
-            if result.total_call_chains == 0:
-                print(f"  {DIM}No cross-file callers found.{RESET}")
-            print()
-
-    elif target:
-        if target not in store.files:
-            print(f"  {RED}File not found in index: {target}{RESET}")
-            print(f"  Run {CYAN}kapa-cortex index{RESET} to rebuild.")
-            sys.exit(1)
-        _print_impact(find_impact(target, store.get_dependents), args.json, json_mod)
-
-    elif args.hotspots:
-        results = find_hotspots(
-            list(store.files.keys()),
-            get_complexity=lambda path: store.files[path].complexity if path in store.files else 0,
-            get_dependents=store.get_dependents,
-            limit=args.limit,
-        )
-        if args.json:
-            data = [{"path": entry.path, "complexity": entry.complexity,
-                      "dependents": entry.dependent_count, "score": round(entry.score, 1)}
-                     for entry in results]
-            print(json_mod.dumps(data, indent=2))
-        else:
-            print(f"\n  {BOLD}Hotspots (complexity × dependents):{RESET}")
-            for index, entry in enumerate(results, 1):
-                print(f"  {index:3d}. {entry.path}  cx={entry.complexity}  dependents={entry.dependent_count}  score={entry.score:.0f}")
-            print()
-
-    elif args.deps:
-        deps = find_deps(args.deps, store.get_dependencies)
-        if args.json:
-            print(json_mod.dumps({"target": args.deps, "dependencies": deps, "total": len(deps)}, indent=2))
-        else:
-            print(f"\n  {BOLD}Dependencies of {CYAN}{args.deps}{RESET}:")
-            for path in deps:
-                print(f"    {path}")
-            print(f"\n  Total: {len(deps)}")
-            print()
-
+        data = _query_or_local("calls", {"target": args.symbol})
     else:
-        # Default: repo overview
-        languages = {}
-        for file_entry in store.files.values():
-            languages[file_entry.language] = languages.get(file_entry.language, 0) + 1
+        data = _query_or_local("impact", {"target": target})
 
-        if args.json:
-            print(json_mod.dumps({
-                "files": store.file_count,
-                "symbols": store.symbol_count,
-                "edges": store.edge_count,
-                "languages": languages,
-            }, indent=2))
-        else:
-            print(f"\n  {BOLD}Repo overview:{RESET}")
-            print(f"  Files   : {store.file_count}")
-            print(f"  Symbols : {store.symbol_count}")
-            print(f"  Edges   : {store.edge_count}")
-            print(f"  Languages:")
-            for lang, count in sorted(languages.items(), key=lambda item: item[1], reverse=True):
-                print(f"    {lang:15s} {count}")
-            print()
+    if args.json:
+        print(json_mod.dumps(data, indent=2))
+    elif args.symbol:
+        _print_symbol_impact(data)
+    else:
+        _print_file_impact(data)
+
+
+def _print_symbol_impact(data: dict) -> None:
+    """Print symbol impact results."""
+    symbol = data.get("symbol", "")
+    target_file = data.get("file", "")
+    caller_files = data.get("caller_files", [])
+    affected_files = data.get("affected_files", [])
+    total = data.get("total_affected", 0)
+    caller_set = set(caller_files)
+
+    print(f"\n  {BOLD}Impact of {CYAN}{symbol}{RESET}" +
+          (f" ({target_file})" if target_file else "") + ":")
+    if caller_files:
+        print(f"  Caller files ({len(caller_files)}):")
+        for path in caller_files:
+            print(f"    {path}")
+    if affected_files:
+        print(f"  Total blast radius ({total} files):")
+        for path in affected_files:
+            marker = "  ←call" if path in caller_set else "  ←dep"
+            print(f"    {path}{DIM}{marker}{RESET}")
+    if total == 0:
+        print(f"  {DIM}No cross-file impact found.{RESET}")
+    print()
+
+
+def _print_file_impact(data: dict) -> None:
+    """Print file impact results from daemon."""
+    target = data.get("target", "")
+    direct = data.get("direct", [])
+    transitive = data.get("transitive", [])
+    total = data.get("total_affected", 0)
+
+    print(f"\n  {BOLD}Impact of {CYAN}{target}{RESET}:")
+    if direct:
+        print(f"  Direct ({len(direct)}):")
+        for path in direct:
+            print(f"    {path}")
+    if transitive:
+        print(f"  Transitive ({len(transitive)}):")
+        for path in transitive:
+            print(f"    {path}")
+    print(f"\n  Total affected: {total}")
+    print()
+
+
+def _cmd_hotspots(args):
+    """Rank files by complexity × dependents."""
+    import json as json_mod
+
+    data = _query_or_local("hotspots", {"limit": args.limit})
+
+    if args.json:
+        print(json_mod.dumps(data, indent=2))
+    else:
+        hotspots = data if isinstance(data, list) else data.get("hotspots", [])
+        print(f"\n  {BOLD}Hotspots (complexity × dependents):{RESET}")
+        for index, entry in enumerate(hotspots, 1):
+            print(f"  {index:3d}. {entry['path']}  cx={entry['complexity']}  dependents={entry['dependents']}  score={entry['score']:.0f}")
+        print()
+
+
+def _cmd_deps(args):
+    """Show forward dependencies of a file."""
+    import json as json_mod
+
+    data = _query_or_local("deps", {"target": args.file})
+
+    if args.json:
+        print(json_mod.dumps(data, indent=2))
+    else:
+        deps = data.get("dependencies", [])
+        print(f"\n  {BOLD}Dependencies of {CYAN}{args.file}{RESET}:")
+        for path in deps:
+            print(f"    {path}")
+        print(f"\n  Total: {len(deps)}")
+        print()
 
 
 def _print_impact(result, use_json, json_mod):
@@ -342,19 +360,6 @@ def _cmd_daemon(args):
         _stop_daemon()
     elif args.daemon_action == "status":
         _print_daemon_status()
-    elif args.daemon_action == "query":
-        if not args.query_args:
-            print(f"  {RED}Missing query. Examples:{RESET}")
-            print(f"    {CYAN}kapa-cortex daemon query analyze{RESET}")
-            print(f"    {CYAN}kapa-cortex daemon query hotspots{RESET}")
-            print(f"    {CYAN}kapa-cortex daemon query impact src/foo.py{RESET}")
-            print(f"    {CYAN}kapa-cortex daemon query deps src/foo.py{RESET}")
-            sys.exit(1)
-        action = args.query_args[0]
-        params = {}
-        if len(args.query_args) > 1:
-            params["target"] = args.query_args[1]
-        _run_daemon_query(action, params)
 
 
 def _cmd_install_skill(args):
@@ -394,15 +399,24 @@ def _parse_args():
     index_parser = subparsers.add_parser("index", help="Pre-compute caches")
     index_parser.set_defaults(func=_cmd_index)
 
-    # ── scan ──
-    scan_parser = subparsers.add_parser("scan", help="Repo analysis — impact, hotspots, deps")
-    scan_parser.add_argument("file", nargs="?", default=None, help="File to analyze impact (what breaks if this changes)")
-    scan_parser.add_argument("--symbol", type=str, metavar="NAME", help="Call-graph impact for a function/class")
-    scan_parser.add_argument("--hotspots", action="store_true", help="Rank files by complexity × dependents")
-    scan_parser.add_argument("--deps", type=str, metavar="FILE", help="Show what FILE depends on (forward)")
-    scan_parser.add_argument("--limit", type=int, default=20, help="Max results for hotspots")
-    scan_parser.add_argument("--json", action="store_true", help="JSON output")
-    scan_parser.set_defaults(func=_cmd_scan)
+    # ── impact ──
+    impact_parser = subparsers.add_parser("impact", help="What breaks if this changes")
+    impact_parser.add_argument("file", nargs="?", default=None, help="File to analyze (file-to-file impact)")
+    impact_parser.add_argument("--symbol", type=str, metavar="NAME", help="Symbol to analyze (call graph + file deps)")
+    impact_parser.add_argument("--json", action="store_true", help="JSON output")
+    impact_parser.set_defaults(func=_cmd_impact)
+
+    # ── hotspots ──
+    hotspots_parser = subparsers.add_parser("hotspots", help="Rank files by complexity × dependents")
+    hotspots_parser.add_argument("--limit", type=int, default=20, help="Max results")
+    hotspots_parser.add_argument("--json", action="store_true", help="JSON output")
+    hotspots_parser.set_defaults(func=_cmd_hotspots)
+
+    # ── deps ──
+    deps_parser = subparsers.add_parser("deps", help="Show forward dependencies of a file")
+    deps_parser.add_argument("file", help="File to analyze")
+    deps_parser.add_argument("--json", action="store_true", help="JSON output")
+    deps_parser.set_defaults(func=_cmd_deps)
 
     # ── analyze ──
     analyze_parser = subparsers.add_parser("analyze", help="Analyze branch, propose stacked PRs")
@@ -445,9 +459,8 @@ def _parse_args():
     extract_parser.set_defaults(func=_cmd_extract)
 
     # ── daemon ──
-    daemon_parser = subparsers.add_parser("daemon", help="Manage daemon (start/stop/status/query)")
-    daemon_parser.add_argument("daemon_action", choices=["start", "stop", "status", "query"])
-    daemon_parser.add_argument("query_args", nargs="*", default=[], help="Query action and arguments (e.g., impact src/foo.py)")
+    daemon_parser = subparsers.add_parser("daemon", help="Manage daemon (start/stop/status)")
+    daemon_parser.add_argument("daemon_action", choices=["start", "stop", "status"])
     daemon_parser.set_defaults(func=_cmd_daemon)
 
     # ── install-skill ──
@@ -571,44 +584,89 @@ def _install_claude_skill():
     print(f"  Or invoke directly: {CYAN}/kapa-cortex{RESET}")
 
 
-def _start_daemon():
+def _ensure_daemon():
+    """Make sure the daemon is running. Start it if needed.
+
+    Index is built in the foreground (user sees progress),
+    then the daemon is forked into the background.
+    """
     from src.interface.daemon.client import is_daemon_running
+    from src.infrastructure.indexer.incremental_indexer import build_full
+    from src.infrastructure.indexer.graph_builder import STORE_PATH
+
+    if is_daemon_running():
+        return
+
+    # Build index in foreground — user sees progress
+    store = build_full()
+    store.save(STORE_PATH)
+
+    # Fork daemon into background with the warm index
+    _fork_daemon_background()
+
+
+def _fork_daemon_background():
+    """Fork a background daemon process and wait for socket."""
+    import os as _os
+    import time as _time
+    from src.interface.daemon.protocol import SOCKET_PATH
+
+    pid = _os.fork()
+    if pid > 0:
+        # Parent — wait for daemon socket to appear
+        for _ in range(50):  # up to 5 seconds
+            if _os.path.exists(SOCKET_PATH):
+                print(f"  {GREEN}Daemon started (pid {pid}){RESET}", file=sys.stderr)
+                return
+            _time.sleep(0.1)
+        print(f"  {YELLOW}Daemon forked (pid {pid}) but socket not ready{RESET}", file=sys.stderr)
+        return
+
+    # Child — become the daemon (index already on disk, suppress output)
+    _os.setsid()
+    _run_daemon_server(silent=True)
+    _os._exit(0)
+
+
+def _run_daemon_server(silent: bool = False):
+    """Run the daemon server (blocking). Used by both fork and explicit start."""
+    import io
     from src.interface.daemon.server import DaemonServer
     from src.interface.daemon.query_router import QueryRouter
     from src.interface.daemon.handlers import build_handler_map, set_index_store
-    from src.infrastructure.indexer.index_store import IndexStore
     from src.infrastructure.indexer.incremental_indexer import build_full
-
-    if is_daemon_running():
-        print(f"  {YELLOW}Daemon already running.{RESET}")
-        return
-
-    cache_path = ".cortex-cache/index.msgpack"
+    from src.infrastructure.indexer.graph_builder import STORE_PATH
 
     def on_start():
-        if Path(cache_path).exists():
-            print(f"  {CYAN}Loading index from cache...{RESET}")
-            store = IndexStore.load(cache_path)
-        else:
-            print(f"  {CYAN}Building index from source...{RESET}")
-            store = build_full()
-            store.save(cache_path)
+        if silent:
+            sys.stderr = io.StringIO()  # suppress duplicate progress
+        store = build_full()
         set_index_store(store)
-        print(f"  {GREEN}Index: {store.file_count} files, {store.symbol_count} symbols, {store.edge_count} edges{RESET}")
+        if silent:
+            sys.stderr = sys.__stderr__
 
     def on_stop():
         from src.interface.daemon.handlers import _get_index_store
         store = _get_index_store()
         if store and store.file_count > 0:
-            store.save(cache_path)
-            print(f"  {CYAN}Index saved to {cache_path}{RESET}")
+            store.save(STORE_PATH)
 
-    print(f"  {BOLD}Starting kapa-cortex daemon...{RESET}")
     server = DaemonServer(QueryRouter({}), on_start=on_start, on_stop=on_stop)
     router = QueryRouter(build_handler_map(server))
     server._router = router
-    print(f"  {GREEN}Listening on unix socket{RESET}")
     server.start()
+
+
+def _start_daemon():
+    """Explicit daemon start (foreground, blocking)."""
+    from src.interface.daemon.client import is_daemon_running
+
+    if is_daemon_running():
+        print(f"  {YELLOW}Daemon already running.{RESET}")
+        return
+
+    print(f"  {BOLD}Starting kapa-cortex daemon...{RESET}")
+    _run_daemon_server()
 
 
 def _stop_daemon():
@@ -640,21 +698,6 @@ def _print_daemon_status():
         print(f"  {RED}Error: {response.error}{RESET}")
 
 
-def _run_daemon_query(action, params=None):
-    import json as json_mod
-    from src.interface.daemon.client import is_daemon_running, send_query
-
-    if not is_daemon_running():
-        print(f"  {RED}Daemon not running.{RESET}")
-        print(f"  Start with: {CYAN}kapa-cortex daemon start{RESET}")
-        sys.exit(1)
-
-    response = send_query(action, params)
-    if response.status == "ok":
-        print(json_mod.dumps(response.data, indent=2))
-    else:
-        print(f"  {RED}Error: {response.error}{RESET}", file=sys.stderr)
-        sys.exit(1)
 
 
 def _print_ai_status():

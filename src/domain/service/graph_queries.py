@@ -115,16 +115,17 @@ def find_hotspots(
 
 def find_call_impact(
     symbol_name: str,
-    get_callers_of_symbol: callable,
-    get_symbol_file: callable,
+    target_file: str,
+    get_callers: callable,
     max_depth: int = 5,
 ) -> CallImpactResult:
     """Find all functions that call a given symbol, transitively.
 
-    Traces the call graph: who calls this function, who calls those, etc.
-    """
-    target_file = get_symbol_file(symbol_name)
+    Uses strong names (function, file) throughout to prevent
+    false matches on common function names.
 
+    get_callers(name, file) → list[CallEntry]
+    """
     direct = [
         CallChain(
             caller_file=call.caller_file,
@@ -133,23 +134,23 @@ def find_call_impact(
             callee_function=call.callee_function,
             line=call.line,
         )
-        for call in get_callers_of_symbol(symbol_name)
+        for call in get_callers(symbol_name, target_file)
     ]
 
-    # BFS: find transitive callers
-    visited: set[str] = {symbol_name}
-    queue: list[tuple[str, int]] = []
+    visited: set[tuple[str, str]] = {(symbol_name, target_file)}
+    queue: list[tuple[str, str, int]] = []
     for chain in direct:
-        if chain.caller_function not in visited:
-            visited.add(chain.caller_function)
-            queue.append((chain.caller_function, 1))
+        key = (chain.caller_function, chain.caller_file)
+        if key not in visited:
+            visited.add(key)
+            queue.append((chain.caller_function, chain.caller_file, 1))
 
     transitive: list[CallChain] = []
     while queue:
-        current_func, depth = queue.pop(0)
+        current_func, current_file, depth = queue.pop(0)
         if depth >= max_depth:
             continue
-        for call in get_callers_of_symbol(current_func):
+        for call in get_callers(current_func, current_file):
             chain = CallChain(
                 caller_file=call.caller_file,
                 caller_function=call.caller_function,
@@ -158,15 +159,70 @@ def find_call_impact(
                 line=call.line,
             )
             transitive.append(chain)
-            if call.caller_function not in visited:
-                visited.add(call.caller_function)
-                queue.append((call.caller_function, depth + 1))
+            key = (call.caller_function, call.caller_file)
+            if key not in visited:
+                visited.add(key)
+                queue.append((call.caller_function, call.caller_file, depth + 1))
 
     return CallImpactResult(
         target_symbol=symbol_name,
-        target_file=target_file or "",
+        target_file=target_file,
         direct_callers=direct,
         transitive_callers=transitive,
+    )
+
+
+@dataclass
+class SymbolImpactResult:
+    """Full blast radius of a symbol: call graph + file dependencies."""
+    target_symbol: str
+    target_file: str
+    caller_files: list[str]
+    affected_files: list[str]
+
+    @property
+    def total_affected(self) -> int:
+        return len(self.affected_files)
+
+
+def find_symbol_impact(
+    symbol_name: str,
+    target_file: str,
+    get_callers: callable,
+    get_dependents: callable,
+    max_depth: int = 5,
+) -> SymbolImpactResult:
+    """Full impact of a symbol: trace call graph, then fan out via file deps.
+
+    1. Find all files containing callers (direct + transitive) of the symbol.
+    2. For each caller file, walk reverse import edges to find affected files.
+    """
+    call_result = find_call_impact(
+        symbol_name, target_file, get_callers, max_depth,
+    )
+
+    caller_files: set[str] = set()
+    for chain in call_result.direct_callers:
+        caller_files.add(chain.caller_file)
+    for chain in call_result.transitive_callers:
+        caller_files.add(chain.caller_file)
+
+    affected: set[str] = set(caller_files)
+    target_file = call_result.target_file
+    if target_file:
+        affected.add(target_file)
+
+    for caller_file in caller_files:
+        dependents = _bfs_reverse(caller_file, get_dependents, max_depth=5)
+        affected.update(dependents)
+
+    affected.discard(target_file)
+
+    return SymbolImpactResult(
+        target_symbol=symbol_name,
+        target_file=target_file,
+        caller_files=sorted(caller_files),
+        affected_files=sorted(affected),
     )
 
 

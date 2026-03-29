@@ -66,6 +66,12 @@ class IndexStore:
         self.edges: list[EdgeEntry] = []
         self.calls: list[CallEntry] = []                  # resolved call graph
         self._symbol_index: dict[str, list[str]] = {}     # symbol_name → file_paths
+        self._dependents: dict[str, list[str]] = {}        # target → [source files]
+        self._dependencies: dict[str, list[str]] = {}      # source → [target files]
+        # strong name: (callee_function, callee_file) → [calls]
+        self._callers_by_strong_name: dict[tuple[str, str], list[CallEntry]] = {}
+        # weak name: callee_function → [calls] (for initial lookup by name only)
+        self._callers_by_name: dict[str, list[CallEntry]] = {}
 
     @property
     def file_count(self) -> int:
@@ -92,9 +98,14 @@ class IndexStore:
 
     def add_edge(self, edge: EdgeEntry) -> None:
         self.edges.append(edge)
+        self._dependents.setdefault(edge.target, []).append(edge.source)
+        self._dependencies.setdefault(edge.source, []).append(edge.target)
 
     def add_call(self, call: CallEntry) -> None:
         self.calls.append(call)
+        strong_key = (call.callee_function, call.callee_file)
+        self._callers_by_strong_name.setdefault(strong_key, []).append(call)
+        self._callers_by_name.setdefault(call.callee_function, []).append(call)
 
     @property
     def call_count(self) -> int:
@@ -118,6 +129,8 @@ class IndexStore:
             call for call in self.calls
             if call.caller_file != file_path and call.callee_file != file_path
         ]
+        # Rebuild reverse indexes
+        self._rebuild_indexes()
 
     def get_symbols_for_file(self, file_path: str) -> list[SymbolEntry]:
         return self.symbols.get(file_path, [])
@@ -128,34 +141,35 @@ class IndexStore:
     def get_files_defining_symbol(self, symbol_name: str) -> list[str]:
         return self._symbol_index.get(symbol_name, [])
 
-    def get_callers_of_symbol(self, symbol_name: str) -> list[CallEntry]:
-        """Find all call sites that call a given function/symbol."""
-        return [
-            call for call in self.calls
-            if call.callee_function == symbol_name
-        ]
+    def get_callers(self, symbol_name: str, file_path: str) -> list[CallEntry]:
+        """Find call sites targeting a specific (name, file) strong name."""
+        return self._callers_by_strong_name.get((symbol_name, file_path), [])
 
-    def get_calls_in_file(self, file_path: str) -> list[CallEntry]:
-        """Get all outgoing calls from a file."""
-        return [call for call in self.calls if call.caller_file == file_path]
-
-    def get_callers_of_file(self, file_path: str) -> list[CallEntry]:
-        """Get all calls into functions defined in a file."""
-        return [call for call in self.calls if call.callee_file == file_path]
+    def get_callers_by_name(self, symbol_name: str) -> list[CallEntry]:
+        """Find call sites by name only (for initial symbol lookup)."""
+        return self._callers_by_name.get(symbol_name, [])
 
     def get_dependents(self, file_path: str) -> list[str]:
         """Files that depend on the given file (reverse edges)."""
-        return [
-            edge.source for edge in self.edges
-            if edge.target == file_path
-        ]
+        return self._dependents.get(file_path, [])
 
     def get_dependencies(self, file_path: str) -> list[str]:
         """Files that the given file depends on (forward edges)."""
-        return [
-            edge.target for edge in self.edges
-            if edge.source == file_path
-        ]
+        return self._dependencies.get(file_path, [])
+
+    def _rebuild_indexes(self) -> None:
+        """Rebuild all reverse indexes from edges and calls."""
+        self._dependents.clear()
+        self._dependencies.clear()
+        self._callers_by_strong_name.clear()
+        self._callers_by_name.clear()
+        for edge in self.edges:
+            self._dependents.setdefault(edge.target, []).append(edge.source)
+            self._dependencies.setdefault(edge.source, []).append(edge.target)
+        for call in self.calls:
+            strong_key = (call.callee_function, call.callee_file)
+            self._callers_by_strong_name.setdefault(strong_key, []).append(call)
+            self._callers_by_name.setdefault(call.callee_function, []).append(call)
 
     def save(self, path: str) -> None:
         """Persist index to MessagePack file."""

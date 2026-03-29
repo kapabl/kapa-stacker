@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -12,12 +13,19 @@ from src.infrastructure.indexer.ctags_indexer import generate_ctags
 from src.infrastructure.indexer.import_cache import build_import_index
 from src.infrastructure.indexer.cochange_cache import build_cochange_matrix
 from src.infrastructure.indexer.complexity_cache import build_complexity_index
+from src.infrastructure.indexer.call_cache import build_call_index
+from src.infrastructure.indexer.graph_builder import build_index_store
 
 BOLD = "\033[1m"
 GREEN = "\033[32m"
 CYAN = "\033[36m"
 DIM = "\033[2m"
 RESET = "\033[0m"
+
+_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+# Shared progress detail — sub-indexers write here, spinner reads it
+_progress_detail: list[str] = [""]
 
 _SOURCE_EXTENSIONS = {
     ".py", ".pyi", ".c", ".h", ".cc", ".cpp", ".cxx", ".hpp",
@@ -53,6 +61,8 @@ def index_repo(root: str = ".") -> dict[str, float]:
     timings["imports"] = _timed("imports", lambda: build_import_index(source_files, root))
     timings["cochange"] = _timed("cochange", lambda: build_cochange_matrix(root=root))
     timings["complexity"] = _timed("complexity", lambda: build_complexity_index(source_files, root))
+    timings["calls"] = _timed("calls", lambda: build_call_index(source_files, root))
+    timings["graph"] = _timed("graph", lambda: build_index_store(root))
 
     total = sum(timings.values())
     print(f"\n  {GREEN}Done{RESET} in {total:.1f}s")
@@ -74,12 +84,45 @@ def _find_source_files(root: str) -> list[str]:
 
 
 def _timed(label: str, fn) -> float:
+    _progress_detail[0] = ""
+    stop_event = threading.Event()
+    spinner_thread = threading.Thread(
+        target=_run_spinner, args=(label, stop_event), daemon=True,
+    )
+    spinner_thread.start()
+
     start = time.monotonic()
     try:
         fn()
         elapsed = time.monotonic() - start
-        print(f"  {GREEN}✓{RESET} {label:12s} {elapsed:.1f}s")
-    except Exception as e:
+        stop_event.set()
+        spinner_thread.join()
+        print(f"\r\033[2K  {GREEN}✓{RESET} {label:12s} {elapsed:.1f}s")
+    except Exception as err:
         elapsed = time.monotonic() - start
-        print(f"  ✗ {label:12s} failed: {e}")
+        stop_event.set()
+        spinner_thread.join()
+        print(f"\r\033[2K  ✗ {label:12s} failed: {err}")
     return elapsed
+
+
+def set_progress(detail: str) -> None:
+    """Called by sub-indexers to update the spinner's detail text."""
+    _progress_detail[0] = detail
+
+
+def _run_spinner(label: str, stop_event: threading.Event) -> None:
+    """Show a spinning animation with optional detail from sub-indexers."""
+    frame_index = 0
+    start = time.monotonic()
+    while not stop_event.is_set():
+        elapsed = time.monotonic() - start
+        frame = _SPINNER_FRAMES[frame_index % len(_SPINNER_FRAMES)]
+        detail = _progress_detail[0]
+        extra = f"  {detail}" if detail else ""
+        print(
+            f"\r\033[2K  {CYAN}{frame}{RESET} {label:12s} {DIM}{elapsed:.0f}s{extra}{RESET}",
+            end="", file=sys.stderr, flush=True,
+        )
+        frame_index += 1
+        stop_event.wait(0.15)

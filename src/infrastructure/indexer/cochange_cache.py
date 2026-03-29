@@ -26,6 +26,7 @@ def build_cochange_matrix(
             ["git", "log", f"--max-count={max_commits}",
              "--name-only", "--format="],
             capture_output=True, text=True, timeout=30,
+            cwd=root,
         )
         if result.returncode != 0:
             return {}
@@ -44,6 +45,9 @@ def load_cochange_cache(root: str = ".") -> dict[str, int] | None:
     return None
 
 
+_MAX_FILES_PER_COMMIT = 100
+
+
 def _count_co_occurrences(log_output: str) -> dict[str, int]:
     matrix: dict[str, int] = {}
     commit_files: list[str] = []
@@ -51,13 +55,26 @@ def _count_co_occurrences(log_output: str) -> dict[str, int]:
     for line in log_output.splitlines():
         stripped = line.strip()
         if not stripped:
-            _add_pairs(commit_files, matrix)
+            _add_capped_pairs(commit_files, matrix)
             commit_files = []
         else:
             commit_files.append(stripped)
 
-    _add_pairs(commit_files, matrix)
+    _add_capped_pairs(commit_files, matrix)
     return matrix
+
+
+def _add_capped_pairs(
+    files: list[str], matrix: dict[str, int],
+) -> None:
+    """Add pairs, but cap large commits to avoid quadratic blowup."""
+    if len(files) > _MAX_FILES_PER_COMMIT:
+        # Too many files — only pair adjacent files in the diff order
+        for idx in range(len(files) - 1):
+            key = "::".join(sorted([files[idx], files[idx + 1]]))
+            matrix[key] = matrix.get(key, 0) + 1
+    else:
+        _add_pairs(files, matrix)
 
 
 def _add_pairs(files: list[str], matrix: dict[str, int]) -> None:
