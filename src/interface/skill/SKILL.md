@@ -4,7 +4,8 @@ description: >
   This skill should be used when the user wants to "split this branch into PRs",
   "analyze my changes for PRs", "create stacked PRs", "extract files for a PR",
   "stack my branch", "analyze this repo", "what depends on this file",
-  or "show me the impact of this change".
+  "show me the impact of this change", "rename this symbol", "find all usages of",
+  "refactor this", "where is this used", or "what calls this".
 ---
 
 # kapa-cortex — Local Code Intelligence Engine
@@ -87,12 +88,59 @@ kapa-cortex daemon query hotspots
 kapa-cortex daemon stop                 # shutdown
 ```
 
+## Rename / Refactor Workflow
+
+When the user asks to rename a symbol, find usages, or refactor:
+
+### 1. Disambiguate with lookup
+
+```bash
+kapa-cortex lookup <symbol>             # find all definitions with FQN scopes
+```
+
+This returns every definition of the symbol across all scopes (classes, namespaces,
+modules). Example: `kapa-cortex lookup solveConstraints` might return:
+
+```
+btDiscreteDynamicsWorld::solveConstraints   method  src/.../btDiscreteDynamicsWorld.h:110
+btSoftBody::solveConstraints               method  src/.../btSoftBody.h:1091
+```
+
+If there's only one definition, proceed directly.
+If there are multiple, reason about which one the user means based on context
+(the file they're in, the class they mentioned). If truly ambiguous, ask:
+"There are N definitions of `X` — did you mean the one in A, B, or C?"
+
+### 2. Get precise references
+
+```bash
+kapa-cortex refs <FQN>                  # LSP references for a specific definition
+```
+
+Takes the fully qualified name from lookup (e.g. `btDiscreteDynamicsWorld::solveConstraints`).
+Returns every file and line where that specific symbol is referenced.
+This is the exact set of locations that need changing for a rename.
+
+### 3. Do the refactoring
+
+Use the lookup definitions (where it's declared/defined) + refs output (where it's used)
+to make all changes. For a rename, this is typically a sed command across the listed files.
+
+### Token rule for refactoring
+
+NEVER grep the codebase to find symbol usages. Use `lookup` + `refs` instead.
+The structured output (FQN, scope, file, line) replaces file reading entirely.
+Benchmark: 5.9x fewer tokens for rename, up to 68x for high-fanout symbols.
+
 ## Command Reference
 
 | Command | Description |
 |---------|-------------|
 | `setup` | Install all dependencies |
 | `index` | Pre-compute caches |
+| `lookup SYMBOL` | Find all definitions with FQN scopes |
+| `refs FQN` | Find all LSP references to a scoped symbol |
+| `reindex [FILES]` | Re-index specific files via daemon |
 | `analyze` | Analyze branch, propose PRs |
 | `plan` | Generate execution plan |
 | `run` | Execute plan |
