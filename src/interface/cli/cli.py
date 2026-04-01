@@ -97,6 +97,20 @@ def _cmd_index(args):
     index_repo()
 
 
+def _cmd_reindex(args):
+    """Re-index specific files or all files via daemon."""
+    from src.interface.daemon.client import send_query
+
+    _ensure_daemon()
+    files = args.files if args.files else None
+    response = send_query("reindex", {"files": files})
+    if response.status != "ok":
+        print(f"  {RED}{response.error}{RESET}")
+        sys.exit(1)
+    count = response.data.get("reindexed", 0)
+    print(f"  {GREEN}✓{RESET} Reindexed {count} files")
+
+
 def _query_or_local(action: str, params: dict) -> dict:
     """Route query through daemon (starting it if needed), or run locally with --no-daemon."""
     from src.interface.daemon.client import send_query
@@ -481,6 +495,11 @@ def _parse_args():
     # ── index ──
     index_parser = subparsers.add_parser("index", help="Pre-compute caches")
     index_parser.set_defaults(func=_cmd_index)
+
+    # ── reindex ──
+    reindex_parser = subparsers.add_parser("reindex", help="Re-index files via daemon")
+    reindex_parser.add_argument("files", nargs="*", help="Files to re-index (all if omitted)")
+    reindex_parser.set_defaults(func=_cmd_reindex)
 
     # ── impact ──
     impact_parser = subparsers.add_parser("impact", help="What breaks if this changes")

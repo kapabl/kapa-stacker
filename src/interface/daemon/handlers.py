@@ -424,6 +424,24 @@ def handle_symbol_file_impact(params: dict, conn: socket.socket) -> dict:
     }
 
 
+def handle_reindex(params: dict, conn: socket.socket) -> dict:
+    """Re-index specific files or the entire repo."""
+    from src.infrastructure.indexer.incremental_indexer import update_file, find_source_files
+    from src.infrastructure.indexer.graph_builder import STORE_PATH
+
+    store = _get_index_store()
+    files = params.get("files")
+    if not files:
+        files = find_source_files(".")
+
+    for file_path in files:
+        update_file(store, file_path)
+
+    store.save(STORE_PATH)
+    set_index_store(store)
+    return {"reindexed": len(files)}
+
+
 def build_handler_map(server=None) -> dict:
     """Build action → handler mapping for the query router."""
     handlers = {
@@ -435,6 +453,7 @@ def build_handler_map(server=None) -> dict:
         "refs": handle_refs,
         "symbol_file_impact": handle_symbol_file_impact,
         "symbol_impact_full": handle_symbol_impact_full,
+        "reindex": handle_reindex,
         "status": handle_status,
     }
     if server:
