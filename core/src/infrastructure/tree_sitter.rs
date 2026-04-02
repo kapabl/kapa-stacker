@@ -146,3 +146,44 @@ fn find_function_ancestor(node: tree_sitter::Node) -> tree_sitter::Node {
     }
     current
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cpp_calls() {
+        let source = "void foo() { bar(); baz(1); }";
+        let calls = extract_calls(source, "cpp");
+        let names: Vec<&str> = calls.iter().map(|c| c.callee_name.as_str()).collect();
+        assert!(names.contains(&"bar"));
+        assert!(names.contains(&"baz"));
+    }
+
+    #[test]
+    fn test_python_calls() {
+        let source = "def main():\n    compute(1)\n    print(x)\n";
+        let calls = extract_calls(source, "python");
+        let names: Vec<&str> = calls.iter().map(|c| c.callee_name.as_str()).collect();
+        assert!(names.contains(&"compute"));
+        assert!(names.contains(&"print"));
+    }
+
+    #[test]
+    fn test_caller_attribution() {
+        let source = "void outer() { inner(); }";
+        let calls = extract_calls(source, "cpp");
+        assert!(!calls.is_empty());
+        assert_eq!(calls[0].callee_name, "inner");
+    }
+
+    #[test]
+    fn test_unknown_language() {
+        assert!(extract_calls("x", "cobol").is_empty());
+    }
+
+    #[test]
+    fn test_empty_source() {
+        assert!(extract_calls("", "cpp").is_empty());
+    }
+}

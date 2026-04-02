@@ -49,6 +49,13 @@ impl LspClient {
 
         client.notify("initialized", serde_json::json!({}))?;
 
+        // Open a trigger file to kick CDB discovery (clangd needs this)
+        if let Some(trigger) = find_trigger_file(root_path, language) {
+            client.open_file(&trigger);
+            // Wait for clangd to start indexing
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+
         Some(client)
     }
 
@@ -182,6 +189,23 @@ fn path_to_uri(path: &str) -> String {
     let abs = std::fs::canonicalize(path)
         .unwrap_or_else(|_| std::path::PathBuf::from(path));
     format!("file://{}", abs.display())
+}
+
+fn find_trigger_file(root: &str, language: &str) -> Option<String> {
+    // For C/C++: grab first file from compile_commands.json
+    let cdb = Path::new(root).join("compile_commands.json");
+    if cdb.exists() {
+        if let Ok(content) = std::fs::read_to_string(&cdb) {
+            if let Ok(entries) = serde_json::from_str::<Vec<serde_json::Value>>(&content) {
+                if let Some(first) = entries.first() {
+                    if let Some(file) = first.get("file").and_then(|f| f.as_str()) {
+                        return Some(file.to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 pub fn detect_language(root: &str) -> Option<&'static str> {

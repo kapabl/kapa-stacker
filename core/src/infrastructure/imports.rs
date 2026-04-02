@@ -92,3 +92,47 @@ fn parse_java_import(line: &str) -> Option<String> {
     let module = rest.trim_start_matches("static").trim();
     Some(module.trim_end_matches(';').trim().to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn write_temp(content: &str) -> tempfile::NamedTempFile {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        f
+    }
+
+    #[test]
+    fn test_c_include_quoted() {
+        let f = write_temp("#include \"foo/bar.h\"\n");
+        let imports = parse_includes(f.path().to_str().unwrap()).unwrap();
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].module, "foo/bar.h");
+    }
+
+    #[test]
+    fn test_c_include_angle() {
+        let f = write_temp("#include <stdio.h>\n");
+        let imports = parse_includes(f.path().to_str().unwrap()).unwrap();
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].module, "stdio.h");
+    }
+
+    #[test]
+    fn test_python_import() {
+        let f = write_temp("from foo.bar import baz\nimport os\n");
+        let imports = parse_includes(f.path().to_str().unwrap()).unwrap();
+        assert_eq!(imports.len(), 2);
+        assert_eq!(imports[0].module, "foo.bar");
+        assert_eq!(imports[1].module, "os");
+    }
+
+    #[test]
+    fn test_no_imports() {
+        let f = write_temp("int x = 5;\n");
+        let imports = parse_includes(f.path().to_str().unwrap()).unwrap();
+        assert!(imports.is_empty());
+    }
+}
