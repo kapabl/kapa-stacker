@@ -91,348 +91,66 @@ def _cmd_setup(args):
     sys.exit(0 if success else 1)
 
 
-def _cmd_index(args):
-    """Index the repository using the Rust engine."""
+def _rust(cmd_args: list[str]):
+    """Delegate to the Rust binary."""
     import subprocess
-    subprocess.run(["kapa-cortex-core", "index", "."])
+    result = subprocess.run(["kapa-cortex-core"] + cmd_args)
+    if result.returncode != 0:
+        sys.exit(result.returncode)
+
+
+def _cmd_index(args):
+    _rust(["index", "."])
 
 
 def _cmd_reindex(args):
-    """Re-index specific files or all files via daemon."""
-    from src.interface.daemon.client import send_query
-
-    _ensure_daemon()
-    files = args.files if args.files else None
-    response = send_query("reindex", {"files": files})
-    if response.status != "ok":
-        print(f"  {RED}{response.error}{RESET}")
-        sys.exit(1)
-    count = response.data.get("reindexed", 0)
-    print(f"  {GREEN}✓{RESET} Reindexed {count} files")
+    _rust(["reindex"] + (args.files or []))
 
 
 def _cmd_lookup(args):
-    """Find all definitions of a symbol across all scopes."""
-    import json as json_mod
-
-    _ensure_daemon()
-    data = _query_or_local("lookup", {"target": args.symbol})
-
+    cmd = ["lookup", args.symbol]
     if args.json:
-        print(json_mod.dumps(data, indent=2))
-        return
-
-    defs = data.get("definitions", [])
-    if not defs:
-        print(f"  {RED}No definitions found for: {args.symbol}{RESET}")
-        sys.exit(1)
-
-    print(f"  {BOLD}{args.symbol}{RESET} ({len(defs)} definitions):")
-    for defn in defs:
-        fqn = defn.get("fqn", args.symbol)
-        kind = defn.get("kind", "")
-        file_path = defn.get("file", "")
-        line = defn.get("line", 0)
-        print(f"    {fqn}  {DIM}{kind}  {file_path}:{line}{RESET}")
+        cmd.append("--json")
+    _rust(cmd)
 
 
 def _cmd_refs(args):
-    """Find all references to symbols via LSP."""
-    import json as json_mod
-
-    _ensure_daemon()
-    fqn_list = args.fqn
-    if len(fqn_list) == 1:
-        data = _query_or_local("refs", {"target": fqn_list[0]})
-    else:
-        data = _query_or_local("refs", {"targets": fqn_list})
-
+    cmd = ["refs"] + args.fqn
     if args.json:
-        print(json_mod.dumps(data, indent=2))
-        return
-
-    if data.get("query") == "refs_batch":
-        for result in data.get("results", []):
-            _print_refs_result(result)
-            print()
-    else:
-        _print_refs_result(data)
-
-
-def _print_refs_result(data: dict) -> None:
-    """Print a single refs result."""
-    if "error" in data:
-        print(f"  {RED}{data['fqn']}: {data['error']}{RESET}")
-        return
-    refs = data.get("references", [])
-    fqn = data.get("fqn", "")
-    source_file = data.get("file", "")
-    source_line = data.get("line", 0)
-    print(f"  {BOLD}{fqn}{RESET}  {DIM}defined at {source_file}:{source_line}{RESET}")
-    print(f"  {len(refs)} references:")
-    for ref in refs:
-        print(f"    {ref['file']}:{ref['line']}")
+        cmd.append("--json")
+    _rust(cmd)
 
 
 def _cmd_explain(args):
-    """Compact summary of a symbol: definition, callers, callees, overrides."""
-    import json as json_mod
-
-    _ensure_daemon()
-    data = _query_or_local("explain", {"target": args.fqn})
-
+    cmd = ["explain", args.fqn]
     if args.json:
-        print(json_mod.dumps(data, indent=2))
-        return
-
-    fqn = data.get("fqn", args.fqn)
-    sig = data.get("signature", "")
-    source_file = data.get("file", "")
-    source_line = data.get("line", 0)
-    callers = data.get("callers", [])
-    callees = data.get("callees", [])
-    overrides = data.get("overrides", [])
-
-    print(f"  {BOLD}{fqn}{RESET}")
-    print(f"  {DIM}{sig}{RESET}")
-    print(f"  {DIM}{source_file}:{source_line}{RESET}")
-    print()
-
-    if callers:
-        print(f"  {BOLD}callers{RESET} ({len(callers)}):")
-        for caller in callers:
-            print(f"    {caller['function']}  {DIM}{caller['file']}:{caller['line']}{RESET}")
-    else:
-        print(f"  {BOLD}callers{RESET}: {DIM}none in index{RESET}")
-
-    if callees:
-        print(f"  {BOLD}callees{RESET} ({len(callees)}):")
-        for callee in callees:
-            print(f"    {callee['function']}  {DIM}{callee['file']}:{callee['line']}{RESET}")
-    else:
-        print(f"  {BOLD}callees{RESET}: {DIM}none in index{RESET}")
-
-    if overrides:
-        print(f"  {BOLD}overrides{RESET} ({len(overrides)}):")
-        for override in overrides:
-            print(f"    {override['fqn']}  {DIM}{override['file']}:{override['line']}{RESET}")
-
-
-def _query_or_local(action: str, params: dict) -> dict:
-    """Route query through Rust daemon (starting it if needed)."""
-    from src.interface.daemon.client import send_query
-
-    _ensure_daemon()
-    response = send_query(action, params)
-    if response.status != "ok":
-        print(f"  {RED}{response.error}{RESET}")
-        sys.exit(1)
-    return response.data
+        cmd.append("--json")
+    _rust(cmd)
 
 
 def _cmd_impact(args):
-    """What breaks if this file or symbol changes."""
-    import json as json_mod
-
-    target = getattr(args, "file", None)
-
-    if not args.symbol and not target:
+    target = args.symbol or getattr(args, "file", None)
+    if not target:
         print(f"  {RED}Provide a file or --symbol NAME{RESET}")
         sys.exit(1)
-
-    if args.symbol:
-        data = _query_or_local("symbol_impact_full", {"target": args.symbol})
-        if args.json:
-            print(json_mod.dumps(data, indent=2))
-        else:
-            _print_full_impact(data, args)
-    else:
-        data = _query_or_local("impact", {"target": target})
-        if args.json:
-            print(json_mod.dumps(data, indent=2))
-        else:
-            _print_file_impact(data)
-
-
-def _print_symbol_impact(data: dict) -> None:
-    """Print symbol impact as an indented call chain."""
-    symbol = data.get("symbol", "")
-    target_file = data.get("file", "")
-    chains = data.get("call_chains", [])
-    affected_files = data.get("affected_files", [])
-
-    print(f"\n  {BOLD}Impact of {CYAN}{symbol}{RESET}" +
-          (f" ({target_file})" if target_file else "") + ":")
-    if chains:
-        print(f"  Call chain ({len(chains)} calls, {len(affected_files)} files):")
-        for chain in chains:
-            caller = chain.get("caller_function", "")
-            caller_file = chain.get("caller_file", "")
-            callee = chain.get("callee_function", "")
-            line = chain.get("line", 0)
-            depth = chain.get("depth", 0)
-            indent = "  " * depth
-            print(f"    {indent}{caller}() → {callee}()  {DIM}{caller_file}:{line}{RESET}")
-    if not chains:
-        print(f"  {DIM}No callers found.{RESET}")
-    print()
-
-
-def _print_file_impact(data: dict) -> None:
-    """Print file impact results from daemon."""
-    target = data.get("target", "")
-    direct = data.get("direct", [])
-    transitive = data.get("transitive", [])
-    total = data.get("total_affected", 0)
-
-    print(f"\n  {BOLD}Impact of {CYAN}{target}{RESET}:")
-    if direct:
-        print(f"  Direct ({len(direct)}):")
-        for path in direct:
-            print(f"    {path}")
-    if transitive:
-        print(f"  Transitive ({len(transitive)}):")
-        for path in transitive:
-            print(f"    {path}")
-    print(f"\n  Total affected: {total}")
-    print()
-
-
-def _print_full_impact(data: dict, args) -> None:
-    """Print unified impact — filters by --calls, --files, --refs or shows all."""
-    symbol = data.get("symbol", "")
-    target_file = data.get("file", "")
-    calls = data.get("calls", [])
-    file_deps = data.get("file_deps", {})
-    lsp_refs = data.get("lsp_refs", [])
-    lsp_status = data.get("lsp_status", "unavailable")
-
-    show_all = not args.calls and not args.files and not args.refs
-
-    print(f"\n  {BOLD}Impact of {CYAN}{symbol}{RESET}" +
-          (f" ({target_file})" if target_file else "") + ":")
-
-    # Call graph section
-    if show_all or args.calls:
-        if calls:
-            affected_files = sorted({chain["caller_file"] for chain in calls})
-            print(f"  {BOLD}Calls{RESET} ({len(calls)} calls, {len(affected_files)} files):")
-            for chain in calls:
-                caller = chain.get("caller_function", "")
-                caller_file = chain.get("caller_file", "")
-                callee = chain.get("callee_function", "")
-                line = chain.get("line", 0)
-                depth = chain.get("depth", 0)
-                indent = "  " * depth
-                print(f"    {indent}{caller}() → {callee}()  {DIM}{caller_file}:{line}{RESET}")
-        elif show_all:
-            print(f"  {BOLD}Calls{RESET}: {DIM}none{RESET}")
-
-    # File deps section
-    if show_all or args.files:
-        direct = file_deps.get("direct", [])
-        transitive = file_deps.get("transitive", [])
-        total = file_deps.get("total", 0)
-        if direct or transitive:
-            print(f"  {BOLD}File deps{RESET} ({total} affected):")
-            for path in direct:
-                print(f"    {path}  {DIM}direct{RESET}")
-            for path in transitive:
-                print(f"    {path}  {DIM}transitive{RESET}")
-        elif show_all:
-            print(f"  {BOLD}File deps{RESET}: {DIM}none{RESET}")
-
-    # LSP refs section — grouped by file
-    if show_all or args.refs:
-        if lsp_refs:
-            print(f"  {BOLD}References{RESET} ({len(lsp_refs)}):")
-            _print_refs_grouped(lsp_refs)
-        elif lsp_status == "ready":
-            print(f"  {BOLD}References{RESET}: {DIM}none{RESET}")
-        elif lsp_status == "unavailable":
-            print(f"  {BOLD}References{RESET}: {DIM}no LSP server{RESET}")
-
-    print()
-
-
-def _print_refs_grouped(refs: list[dict]) -> None:
-    """Print references grouped by file with source lines and kind."""
-    from collections import defaultdict
-
-    by_file: dict[str, list[dict]] = defaultdict(list)
-    for ref in refs:
-        by_file[ref["file"]].append(ref)
-
-    for file_path in sorted(by_file.keys()):
-        file_refs = by_file[file_path]
-        short_path = file_path.rsplit("/", 1)[-1]
-        print(f"    {BOLD}{file_path}{RESET} ({len(file_refs)}):")
-        for ref in sorted(file_refs, key=lambda r: r["line"]):
-            line = ref["line"]
-            source = ref.get("source", "")
-            kind = ref.get("kind", "ref")
-            # Truncate long lines
-            if len(source) > 80:
-                source = source[:77] + "..."
-            print(f"      {line:4d}: {source}  {DIM}←{kind}{RESET}")
+    cmd = ["impact", target]
+    if args.json:
+        cmd.append("--json")
+    _rust(cmd)
 
 
 def _cmd_hotspots(args):
-    """Rank files by complexity × dependents."""
-    import json as json_mod
-
-    data = _query_or_local("hotspots", {"limit": args.limit})
-
+    cmd = ["hotspots", "--limit", str(args.limit)]
     if args.json:
-        print(json_mod.dumps(data, indent=2))
-    else:
-        hotspots = data if isinstance(data, list) else data.get("hotspots", [])
-        print(f"\n  {BOLD}Hotspots (complexity × dependents):{RESET}")
-        for index, entry in enumerate(hotspots, 1):
-            print(f"  {index:3d}. {entry['path']}  cx={entry['complexity']}  dependents={entry['dependents']}  score={entry['score']:.0f}")
-        print()
+        cmd.append("--json")
+    _rust(cmd)
 
 
 def _cmd_deps(args):
-    """Show forward dependencies of a file."""
-    import json as json_mod
-
-    data = _query_or_local("deps", {"target": args.file})
-
+    cmd = ["deps", args.file]
     if args.json:
-        print(json_mod.dumps(data, indent=2))
-    else:
-        deps = data.get("dependencies", [])
-        print(f"\n  {BOLD}Dependencies of {CYAN}{args.file}{RESET}:")
-        for path in deps:
-            print(f"    {path}")
-        print(f"\n  Total: {len(deps)}")
-        print()
-
-
-def _print_impact(result, use_json, json_mod):
-    """Print impact analysis result."""
-    if use_json:
-        print(json_mod.dumps({
-            "target": result.target,
-            "direct": result.direct,
-            "transitive": result.transitive,
-            "total_affected": result.total_affected,
-        }, indent=2))
-    else:
-        print(f"\n  {BOLD}Impact of {CYAN}{result.target}{RESET}:")
-        if result.direct:
-            print(f"  Direct ({len(result.direct)}):")
-            for path in result.direct:
-                print(f"    {path}")
-        if result.transitive:
-            print(f"  Transitive ({len(result.transitive)}):")
-            for path in result.transitive:
-                print(f"    {path}")
-        print(f"\n  Total affected: {result.total_affected}")
-        if result.total_affected == 0:
-            print(f"  {DIM}No files depend on this file.{RESET}")
-        print()
+        cmd.append("--json")
+    _rust(cmd)
 
 
 def _cmd_analyze(args):
@@ -786,34 +504,6 @@ def _install_claude_skill():
     print(f"    {CYAN}\"what depends on this file\"{RESET}")
     print(f"  Or invoke directly: {CYAN}/kapa-cortex{RESET}")
 
-
-def _ensure_daemon():
-    """Make sure the Rust daemon is running. Start it if needed."""
-    from src.interface.daemon.client import is_daemon_running
-
-    if is_daemon_running():
-        return
-
-    import subprocess
-    import time as _time
-    import os as _os
-
-    SOCKET_PATH = "/tmp/kapa-cortex.sock"
-    RUST_BINARY = "kapa-cortex-core"
-
-    proc = subprocess.Popen(
-        [RUST_BINARY, "daemon", "start"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        stdin=subprocess.DEVNULL,
-    )
-
-    for _ in range(300):
-        if _os.path.exists(SOCKET_PATH):
-            print(f"  {GREEN}Daemon started (pid {proc.pid}){RESET}", file=sys.stderr)
-            return
-        _time.sleep(0.1)
-    print(f"  {YELLOW}Daemon started but socket not ready{RESET}", file=sys.stderr)
 
 
 def _start_daemon():
