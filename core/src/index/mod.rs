@@ -2,6 +2,7 @@ pub mod hasher;
 pub mod walker;
 pub mod ctags;
 pub mod imports;
+pub mod calls;
 
 use crate::db::Database;
 use rusqlite::params;
@@ -21,6 +22,7 @@ pub fn index_repo(db: &Database, root: &str) -> Result<(), String> {
 
         let mut symbol_count: usize = 0;
         let mut import_count: usize = 0;
+        let mut call_count: usize = 0;
 
         for (idx, file_path) in files.iter().enumerate() {
             // Progress every 100 files
@@ -66,12 +68,29 @@ pub fn index_repo(db: &Database, root: &str) -> Result<(), String> {
                 ).map_err(|e| e.to_string())?;
                 import_count += 1;
             }
+
+            // Call extraction via tree-sitter
+            let lang = detect_language(file_path);
+            if let Some(lang_name) = lang {
+                let source = String::from_utf8_lossy(
+                    &std::fs::read(file_path).unwrap_or_default()
+                ).to_string();
+                let call_sites = calls::extract_calls(&source, lang_name);
+                for call in &call_sites {
+                    conn.execute(
+                        "INSERT INTO calls (caller_file, caller_function, callee_file, callee_function, line)
+                         VALUES (?, ?, '', ?, ?)",
+                        params![relative, call.caller_function, call.callee_name, call.line],
+                    ).map_err(|e| e.to_string())?;
+                    call_count += 1;
+                }
+            }
         }
 
         conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
 
         let elapsed = start.elapsed().as_secs_f32();
-        eprintln!("\r\x1b[2K  \x1b[32m✓\x1b[0m {} symbols, {} imports ({:.1}s)", symbol_count, import_count, elapsed);
+        eprintln!("\r\x1b[2K  \x1b[32m✓\x1b[0m {} symbols, {} imports, {} calls ({:.1}s)", symbol_count, import_count, call_count, elapsed);
 
         Ok(())
     })?;
@@ -86,6 +105,24 @@ pub fn index_repo(db: &Database, root: &str) -> Result<(), String> {
     eprintln!("  \x1b[32m✓\x1b[0m Index complete in {:.1}s", total_elapsed);
 
     Ok(())
+}
+
+fn detect_language(file_path: &str) -> Option<&str> {
+    let ext = std::path::Path::new(file_path)
+        .extension()
+        .and_then(|e| e.to_str())?;
+    match ext {
+        "c" | "h" => Some("c"),
+        "cpp" | "cc" | "cxx" | "hpp" | "hxx" => Some("cpp"),
+        "py" | "pyi" => Some("python"),
+        "java" => Some("java"),
+        "go" => Some("go"),
+        "js" | "jsx" | "mjs" | "cjs" => Some("javascript"),
+        "ts" | "tsx" => Some("typescript"),
+        "rs" => Some("rust"),
+        "kt" | "kts" => Some("kotlin"),
+        _ => None,
+    }
 }
 
 fn build_edges(db: &Database) -> Result<usize, String> {
