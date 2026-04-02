@@ -1,4 +1,4 @@
-use rusqlite::Connection;
+use rusqlite::{Connection, params};
 use std::os::unix::net::UnixStream;
 use crate::db::{Database, queries};
 use super::protocol::{read_request, write_response, Response};
@@ -22,6 +22,10 @@ fn dispatch(
         "symbols" => handle_symbols(params, conn),
         "explain" => handle_explain(params, conn),
         "trace" => handle_trace(params, conn),
+        "impact" => handle_impact(params, conn),
+        "deps" => handle_deps(params, conn),
+        "hotspots" => handle_hotspots(params, conn),
+        "calls" => handle_calls(params, conn),
         "status" => handle_status(conn),
         _ => Err(format!("Unknown action: {}", action)),
     };
@@ -138,6 +142,97 @@ fn handle_trace(
         "target": target_fqn,
         "path": path,
         "hops": hops,
+    }))
+}
+
+fn handle_impact(
+    params: &serde_json::Value,
+    conn: &Connection,
+) -> Result<serde_json::Value, String> {
+    let target = get_target(params)?;
+
+    // Check if target is a file or a symbol
+    let file_exists: bool = conn
+        .query_row("SELECT COUNT(*) FROM files WHERE path = ?", params![target], |row| row.get::<_, i64>(0))
+        .map_err(|e| e.to_string())?
+        > 0;
+
+    if file_exists {
+        let (direct, transitive) = queries::find_impact(conn, target, 10).map_err(|e| e.to_string())?;
+        Ok(serde_json::json!({
+            "query": "impact",
+            "target": target,
+            "direct": direct,
+            "transitive": transitive,
+            "total_affected": direct.len() + transitive.len(),
+        }))
+    } else {
+        // Symbol — find its file, then do call impact
+        let (scope, name) = split_fqn(target);
+        let (file, _line) = queries::find_scoped_definition(conn, name, scope)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("Not found: {}", target))?;
+
+        let callers = queries::find_call_impact(conn, name, &file, 10).map_err(|e| e.to_string())?;
+        let affected_files: Vec<String> = callers.iter().map(|c| c.file.clone()).collect::<std::collections::HashSet<_>>().into_iter().collect();
+        Ok(serde_json::json!({
+            "query": "symbol_impact",
+            "target": target,
+            "file": file,
+            "callers": callers,
+            "affected_files": affected_files,
+            "total_affected": affected_files.len(),
+        }))
+    }
+}
+
+fn handle_deps(
+    params: &serde_json::Value,
+    conn: &Connection,
+) -> Result<serde_json::Value, String> {
+    let target = get_target(params)?;
+    let deps = queries::find_deps(conn, target, 10).map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({
+        "query": "deps",
+        "target": target,
+        "dependencies": deps,
+        "total": deps.len(),
+    }))
+}
+
+fn handle_hotspots(
+    params: &serde_json::Value,
+    conn: &Connection,
+) -> Result<serde_json::Value, String> {
+    let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
+    let hotspots = queries::find_hotspots(conn, limit).map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({
+        "query": "hotspots",
+        "hotspots": hotspots,
+    }))
+}
+
+fn handle_calls(
+    params: &serde_json::Value,
+    conn: &Connection,
+) -> Result<serde_json::Value, String> {
+    let fqn = get_target(params)?;
+    let (scope, name) = split_fqn(fqn);
+
+    let (file, _line) = queries::find_scoped_definition(conn, name, scope)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Symbol not found: {}", fqn))?;
+
+    let callers = queries::find_call_impact(conn, name, &file, 10).map_err(|e| e.to_string())?;
+    let affected_files: Vec<String> = callers.iter().map(|c| c.file.clone()).collect::<std::collections::HashSet<_>>().into_iter().collect();
+
+    Ok(serde_json::json!({
+        "query": "calls",
+        "fqn": fqn,
+        "file": file,
+        "callers": callers,
+        "affected_files": affected_files,
+        "total_affected": affected_files.len(),
     }))
 }
 

@@ -15,7 +15,7 @@ pub struct Reference {
     pub line: i64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct CallerInfo {
     pub function: String,
     pub file: String,
@@ -214,6 +214,132 @@ pub fn trace_path(
     }
 
     Ok(Vec::new()) // no path found
+}
+
+/// BFS: find all transitive dependents (who depends on this file).
+pub fn find_impact(conn: &Connection, target: &str, max_depth: usize) -> rusqlite::Result<(Vec<String>, Vec<String>)> {
+    let direct = get_dependents(conn, target)?;
+    let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+    visited.insert(target.to_string());
+    for d in &direct {
+        visited.insert(d.clone());
+    }
+
+    let mut queue: std::collections::VecDeque<(String, usize)> = std::collections::VecDeque::new();
+    for d in &direct {
+        queue.push_back((d.clone(), 1));
+    }
+
+    let mut transitive = Vec::new();
+    while let Some((current, depth)) = queue.pop_front() {
+        if depth >= max_depth {
+            continue;
+        }
+        for dep in get_dependents(conn, &current)? {
+            if !visited.contains(&dep) {
+                visited.insert(dep.clone());
+                transitive.push(dep.clone());
+                queue.push_back((dep, depth + 1));
+            }
+        }
+    }
+
+    Ok((direct, transitive))
+}
+
+/// BFS: find all transitive dependencies (what does this file depend on).
+pub fn find_deps(conn: &Connection, target: &str, max_depth: usize) -> rusqlite::Result<Vec<String>> {
+    let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+    visited.insert(target.to_string());
+    let mut queue: std::collections::VecDeque<(String, usize)> = std::collections::VecDeque::new();
+    queue.push_back((target.to_string(), 0));
+    let mut result = Vec::new();
+
+    while let Some((current, depth)) = queue.pop_front() {
+        if depth >= max_depth {
+            continue;
+        }
+        for dep in get_dependencies(conn, &current)? {
+            if !visited.contains(&dep) {
+                visited.insert(dep.clone());
+                result.push(dep.clone());
+                queue.push_back((dep, depth + 1));
+            }
+        }
+    }
+
+    Ok(result)
+}
+
+#[derive(Debug, Serialize)]
+pub struct HotspotEntry {
+    pub path: String,
+    pub complexity: i64,
+    pub dependents: i64,
+    pub score: f64,
+}
+
+/// Find riskiest files: high complexity × many dependents.
+pub fn find_hotspots(conn: &Connection, limit: usize) -> rusqlite::Result<Vec<HotspotEntry>> {
+    let mut stmt = conn.prepare(
+        "SELECT f.path, f.complexity,
+                (SELECT COUNT(*) FROM edges e WHERE e.target = f.path) AS dep_count
+         FROM files f
+         WHERE f.complexity > 0
+         ORDER BY f.complexity * (1 + (SELECT COUNT(*) FROM edges e WHERE e.target = f.path)) DESC
+         LIMIT ?",
+    )?;
+
+    let rows = stmt.query_map(params![limit as i64], |row| {
+        let path: String = row.get(0)?;
+        let complexity: i64 = row.get(1)?;
+        let dependents: i64 = row.get(2)?;
+        let score = complexity as f64 * (1.0 + dependents as f64);
+        Ok(HotspotEntry { path, complexity, dependents, score })
+    })?;
+    rows.collect()
+}
+
+/// Find all callers transitively (call graph BFS).
+pub fn find_call_impact(
+    conn: &Connection,
+    symbol: &str,
+    file: &str,
+    max_depth: usize,
+) -> rusqlite::Result<Vec<CallerInfo>> {
+    let mut visited: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+    visited.insert((symbol.to_string(), file.to_string()));
+
+    let mut queue: std::collections::VecDeque<(String, String, usize)> = std::collections::VecDeque::new();
+    let mut result = Vec::new();
+
+    // Direct callers
+    let direct = get_callers(conn, symbol, file)?;
+    for caller in &direct {
+        result.push(caller.clone());
+        let key = (caller.function.clone(), caller.file.clone());
+        if !visited.contains(&key) {
+            visited.insert(key.clone());
+            queue.push_back((key.0, key.1, 1));
+        }
+    }
+
+    // Transitive
+    while let Some((func, file, depth)) = queue.pop_front() {
+        if depth >= max_depth {
+            continue;
+        }
+        for caller in get_callers(conn, &func, &file)? {
+            result.push(caller.clone());
+            let key = (caller.function.clone(), caller.file.clone());
+            if !visited.contains(&key) {
+                visited.insert(key.clone());
+                queue.push_back((key.0, key.1, depth + 1));
+            }
+        }
+    }
+
+    Ok(result)
 }
 
 /// Check if an entry exists in the content-addressed cache.
