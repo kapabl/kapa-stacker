@@ -70,6 +70,23 @@ pub fn analyze_file(file_path: &str) -> Option<FileComplexity> {
     }
 }
 
+/// Load complexity from a JSON cache file.
+pub fn load_complexity_cache(root: &str) -> Option<std::collections::HashMap<String, FileComplexity>> {
+    let path = std::path::Path::new(root).join(".cortex-cache/complexity.json");
+    let content = std::fs::read_to_string(path).ok()?;
+    let raw: serde_json::Value = serde_json::from_str(&content).ok()?;
+    let obj = raw.as_object()?;
+    let mut result = std::collections::HashMap::new();
+    for (file_path, data) in obj {
+        let complexity = data.get("complexity").and_then(|v| v.as_i64()).unwrap_or(0);
+        let lines = data.get("lines").and_then(|v| v.as_i64()).unwrap_or(0);
+        result.insert(file_path.clone(), FileComplexity {
+            path: file_path.clone(), lines, complexity,
+        });
+    }
+    Some(result)
+}
+
 fn parse_lizard_csv(csv: &str) -> Vec<FileComplexity> {
     // lizard CSV columns: NLOC,CCN,Token,PARAM,Length,Location,File,Function,LongName,StartLine,EndLine
     // Column 1 = CCN, Column 6 = File (0-indexed)
@@ -98,4 +115,42 @@ fn parse_lizard_csv(csv: &str) -> Vec<FileComplexity> {
         .into_iter()
         .map(|(path, (complexity, lines))| FileComplexity { path, lines, complexity })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_load_complexity_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_dir = dir.path().join(".cortex-cache");
+        std::fs::create_dir(&cache_dir).unwrap();
+        std::fs::write(
+            cache_dir.join("complexity.json"),
+            r#"{"src/foo.py": {"complexity": 5, "lines": 100, "language": "Python"}}"#,
+        ).unwrap();
+
+        let cache = load_complexity_cache(dir.path().to_str().unwrap()).unwrap();
+        assert!(cache.contains_key("src/foo.py"));
+        assert_eq!(cache["src/foo.py"].complexity, 5);
+        assert_eq!(cache["src/foo.py"].lines, 100);
+    }
+
+    #[test]
+    fn test_load_complexity_cache_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(load_complexity_cache(dir.path().to_str().unwrap()).is_none());
+    }
+
+    #[test]
+    fn test_load_complexity_cache_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_dir = dir.path().join(".cortex-cache");
+        std::fs::create_dir(&cache_dir).unwrap();
+        std::fs::write(cache_dir.join("complexity.json"), "{}").unwrap();
+
+        let cache = load_complexity_cache(dir.path().to_str().unwrap()).unwrap();
+        assert!(cache.is_empty());
+    }
 }

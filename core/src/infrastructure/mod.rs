@@ -8,3 +8,4 @@ pub mod complexity;
 pub mod lsp;
 pub mod git;
 pub mod llm;
+pub mod cochange;
