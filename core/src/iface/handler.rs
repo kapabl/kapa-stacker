@@ -41,7 +41,7 @@ fn dispatch(
         "hotspots" => handle_hotspots(params, conn),
         "calls" => handle_calls(params, conn),
         "refs" => handle_refs(params, conn, lsp_lock),
-        "status" => handle_status(conn),
+        "status" => handle_status(conn, lsp_lock),
         _ => Err(format!("Unknown action: {}", action)),
     };
 
@@ -296,18 +296,37 @@ fn handle_refs(
     }))
 }
 
-fn handle_status(conn: &Connection) -> Result<serde_json::Value, String> {
+fn handle_status(
+    conn: &Connection,
+    lsp_lock: Option<&std::sync::Mutex<Option<lsp::LspClient>>>,
+) -> Result<serde_json::Value, String> {
     let files = sqlite::file_count(conn).map_err(|e| e.to_string())?;
     let symbols = sqlite::symbol_count(conn).map_err(|e| e.to_string())?;
     let edges = sqlite::edge_count(conn).map_err(|e| e.to_string())?;
     let calls = sqlite::call_count(conn).map_err(|e| e.to_string())?;
 
+    let lsp_status = if let Some(lock) = lsp_lock {
+        if let Ok(guard) = lock.lock() {
+            if guard.is_some() { "running" } else { "not started" }
+        } else {
+            "error"
+        }
+    } else {
+        "unavailable"
+    };
+
+    let language = lsp::detect_language(".").unwrap_or("none");
+
     Ok(serde_json::json!({
-        "running": true,
-        "index_files": files,
-        "index_symbols": symbols,
-        "index_edges": edges,
-        "index_calls": calls,
+        "daemon": true,
+        "files": files,
+        "symbols": symbols,
+        "edges": edges,
+        "calls": calls,
+        "lsp": {
+            "status": lsp_status,
+            "language": language,
+        },
     }))
 }
 
