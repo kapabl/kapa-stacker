@@ -87,3 +87,42 @@ pub struct ExecutionPlan {
     pub base: String,
     pub steps: Vec<ExecutionStep>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn file(path: &str, added: i64, removed: i64) -> ChangedFile {
+        ChangedFile {
+            path: path.to_string(),
+            added, removed,
+            status: "M".to_string(),
+            diff_text: String::new(),
+            complexity: 0,
+            structural_ratio: 1.0,
+        }
+    }
+
+    #[test]
+    fn test_is_text_or_docs() {
+        assert!(file("README.md", 10, 0).is_text_or_docs());
+        assert!(file("data.json", 10, 0).is_text_or_docs());
+        assert!(!file("main.py", 10, 0).is_text_or_docs());
+        assert!(!file("src/lib.rs", 10, 0).is_text_or_docs());
+        assert!(file("config.yaml", 5, 0).is_text_or_docs());
+        assert!(file("Cargo.lock", 100, 0).is_text_or_docs());
+    }
+
+    #[test]
+    fn test_code_lines() {
+        assert_eq!(file("a.py", 30, 10).code_lines(), 40);
+        assert_eq!(file("b.rs", 0, 0).code_lines(), 0);
+    }
+
+    #[test]
+    fn test_module_key() {
+        assert_eq!(file("src/foo.py", 1, 0).module_key(), "src");
+        assert_eq!(file("setup.py", 1, 0).module_key(), "__root__");
+        assert_eq!(file("tests/unit/test_foo.py", 1, 0).module_key(), "tests");
+    }
+}

@@ -41,3 +41,40 @@ fn walk_dir(dir: &Path, files: &mut Vec<String>) -> Result<(), String> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_find_source_files() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("main.py"), "print()").unwrap();
+        fs::write(dir.path().join("lib.rs"), "fn main() {}").unwrap();
+        fs::write(dir.path().join("readme.md"), "# Hello").unwrap();
+        fs::write(dir.path().join("data.csv"), "a,b").unwrap();
+
+        let files = find_source_files(dir.path().to_str().unwrap()).unwrap();
+        assert_eq!(files.len(), 2); // .py and .rs, not .md or .csv
+    }
+
+    #[test]
+    fn test_skip_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let git_dir = dir.path().join(".git");
+        fs::create_dir(&git_dir).unwrap();
+        fs::write(git_dir.join("config.py"), "x").unwrap();
+        fs::write(dir.path().join("main.py"), "y").unwrap();
+
+        let files = find_source_files(dir.path().to_str().unwrap()).unwrap();
+        assert_eq!(files.len(), 1); // only main.py, not .git/config.py
+    }
+
+    #[test]
+    fn test_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = find_source_files(dir.path().to_str().unwrap()).unwrap();
+        assert!(files.is_empty());
+    }
+}

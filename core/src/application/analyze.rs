@@ -117,3 +117,92 @@ fn risk_level(files: &[&ChangedFile]) -> String {
         "low".to_string()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn file(path: &str, added: i64, removed: i64) -> ChangedFile {
+        ChangedFile {
+            path: path.to_string(), added, removed,
+            status: "M".to_string(), diff_text: String::new(),
+            complexity: 0, structural_ratio: 1.0,
+        }
+    }
+
+    #[test]
+    fn test_empty_files_no_prs() {
+        let prs = group_into_prs(&[], 3, 200);
+        assert!(prs.is_empty());
+    }
+
+    #[test]
+    fn test_docs_go_first() {
+        let files = vec![file("src/main.rs", 50, 10), file("README.md", 5, 0)];
+        let prs = group_into_prs(&files, 3, 200);
+        assert_eq!(prs[0].title, "Documentation updates");
+        assert!(prs[0].files.contains(&"README.md".to_string()));
+    }
+
+    #[test]
+    fn test_split_by_max_files() {
+        let files = vec![
+            file("src/a.rs", 10, 0),
+            file("src/b.rs", 10, 0),
+            file("src/c.rs", 10, 0),
+            file("src/d.rs", 10, 0),
+        ];
+        let prs = group_into_prs(&files, 2, 1000);
+        assert!(prs.len() >= 2);
+    }
+
+    #[test]
+    fn test_split_by_max_lines() {
+        let files = vec![
+            file("src/a.rs", 150, 0),
+            file("src/b.rs", 150, 0),
+        ];
+        let prs = group_into_prs(&files, 10, 200);
+        assert!(prs.len() >= 2);
+    }
+
+    #[test]
+    fn test_risk_level_low() {
+        let f = file("a.rs", 10, 5);
+        assert_eq!(risk_level(&[&f]), "low");
+    }
+
+    #[test]
+    fn test_risk_level_medium() {
+        let f = file("a.rs", 150, 100);
+        assert_eq!(risk_level(&[&f]), "medium");
+    }
+
+    #[test]
+    fn test_risk_level_high() {
+        let f = file("a.rs", 300, 300);
+        assert_eq!(risk_level(&[&f]), "high");
+    }
+
+    #[test]
+    fn test_risk_level_high_complexity() {
+        let mut f = file("a.rs", 10, 0);
+        f.complexity = 60;
+        assert_eq!(risk_level(&[&f]), "high");
+    }
+
+    #[test]
+    fn test_rule_based_description() {
+        let files = vec!["a.rs".to_string(), "b.rs".to_string()];
+        let desc = llm::rule_based_description(&files);
+        assert!(desc.contains("a.rs"));
+        assert!(desc.contains("b.rs"));
+    }
+
+    #[test]
+    fn test_rule_based_description_many_files() {
+        let files: Vec<String> = (0..10).map(|i| format!("file{}.rs", i)).collect();
+        let desc = llm::rule_based_description(&files);
+        assert!(desc.contains("5 more"));
+    }
+}

@@ -208,3 +208,66 @@ fn build_edges(db: &Database) -> Result<usize, String> {
         Ok(edge_count)
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_detect_python() {
+        assert_eq!(detect_language("src/main.py"), Some("python"));
+        assert_eq!(detect_language("types.pyi"), Some("python"));
+    }
+
+    #[test]
+    fn test_detect_cpp() {
+        assert_eq!(detect_language("src/main.cpp"), Some("cpp"));
+        assert_eq!(detect_language("include/header.hpp"), Some("cpp"));
+    }
+
+    #[test]
+    fn test_detect_c() {
+        assert_eq!(detect_language("src/main.c"), Some("c"));
+        assert_eq!(detect_language("include/header.h"), Some("c"));
+    }
+
+    #[test]
+    fn test_detect_java() {
+        assert_eq!(detect_language("src/Main.java"), Some("java"));
+    }
+
+    #[test]
+    fn test_detect_kotlin() {
+        assert_eq!(detect_language("src/App.kt"), Some("kotlin"));
+        assert_eq!(detect_language("build.gradle.kts"), Some("kotlin"));
+    }
+
+    #[test]
+    fn test_detect_go() {
+        assert_eq!(detect_language("cmd/server.go"), Some("go"));
+    }
+
+    #[test]
+    fn test_detect_rust() {
+        assert_eq!(detect_language("src/lib.rs"), Some("rust"));
+    }
+
+    #[test]
+    fn test_detect_typescript() {
+        assert_eq!(detect_language("src/app.ts"), Some("typescript"));
+        assert_eq!(detect_language("src/Button.tsx"), Some("typescript"));
+    }
+
+    #[test]
+    fn test_detect_javascript() {
+        assert_eq!(detect_language("src/index.js"), Some("javascript"));
+        assert_eq!(detect_language("src/App.jsx"), Some("javascript"));
+    }
+
+    #[test]
+    fn test_detect_unknown() {
+        assert_eq!(detect_language("README.md"), None);
+        assert_eq!(detect_language("Makefile"), None);
+        assert_eq!(detect_language("Dockerfile"), None);
+    }
+}
