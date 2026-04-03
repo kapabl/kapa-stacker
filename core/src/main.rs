@@ -120,14 +120,58 @@ fn run_index(root: &str) {
     });
 }
 
+fn ensure_daemon() {
+    use std::os::unix::net::UnixStream;
+
+    // Already running?
+    if UnixStream::connect(iface::server::SOCKET_PATH).is_ok() {
+        return;
+    }
+
+    // Check if index exists, build if not
+    let db_path = PathBuf::from(".cortex-cache/index.db");
+    let needs_index = !db_path.exists() || {
+        let db = infrastructure::sqlite::Database::open(&db_path).ok();
+        db.map(|d| d.with_conn(|c| infrastructure::sqlite::file_count(c).unwrap_or(0) == 0)).unwrap_or(true)
+    };
+
+    if needs_index {
+        run_index(".");
+    }
+
+    // Start daemon in background
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("kapa-cortex"));
+    let child = std::process::Command::new(&exe)
+        .args(["daemon", "start"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::inherit())
+        .spawn();
+
+    if child.is_err() {
+        eprintln!("  \x1b[31mFailed to start daemon\x1b[0m");
+        std::process::exit(1);
+    }
+
+    // Wait for socket
+    for _ in 0..100 {
+        if UnixStream::connect(iface::server::SOCKET_PATH).is_ok() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    eprintln!("  \x1b[33mDaemon started but socket not ready\x1b[0m");
+}
+
 fn query(action: &str, params: serde_json::Value, json_output: bool) {
     use std::io::{Read, Write};
     use std::os::unix::net::UnixStream;
 
+    ensure_daemon();
+
     let mut stream = match UnixStream::connect(iface::server::SOCKET_PATH) {
         Ok(s) => s,
         Err(_) => {
-            eprintln!("  \x1b[33mNo daemon running. Start with: kapa-cortex daemon start\x1b[0m");
+            eprintln!("  \x1b[31mDaemon not responding\x1b[0m");
             std::process::exit(1);
         }
     };
