@@ -152,9 +152,10 @@ fn ensure_daemon() {
         std::process::exit(1);
     }
 
-    // Wait for socket
+    // Wait for socket to be ready
     for _ in 0..100 {
         if UnixStream::connect(iface::server::SOCKET_PATH).is_ok() {
+            std::thread::sleep(std::time::Duration::from_millis(500));
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -168,9 +169,17 @@ fn query(action: &str, params: serde_json::Value, json_output: bool) {
 
     ensure_daemon();
 
-    let mut stream = match UnixStream::connect(iface::server::SOCKET_PATH) {
-        Ok(s) => s,
-        Err(_) => {
+    // Retry connection — daemon may need a moment after socket bind
+    let mut stream = None;
+    for _ in 0..10 {
+        match UnixStream::connect(iface::server::SOCKET_PATH) {
+            Ok(s) => { stream = Some(s); break; }
+            Err(_) => std::thread::sleep(std::time::Duration::from_millis(200)),
+        }
+    }
+    let mut stream = match stream {
+        Some(s) => s,
+        None => {
             eprintln!("  \x1b[31mDaemon not responding\x1b[0m");
             std::process::exit(1);
         }

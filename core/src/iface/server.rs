@@ -51,7 +51,11 @@ pub fn run(db: Arc<Database>) -> std::io::Result<()> {
                 let state = Arc::clone(&state);
                 std::thread::spawn(move || {
                     if let Err(err) = handler::handle_connection_v2(stream, &state) {
-                        eprintln!("  \x1b[33mHandler error: {}\x1b[0m", err);
+                        let msg = err.to_string();
+                        // Silently ignore probe connections (health checks, ensure_daemon)
+                        if !msg.contains("fill whole buffer") && !msg.contains("broken pipe") {
+                            eprintln!("  \x1b[33mHandler error: {}\x1b[0m", msg);
+                        }
                     }
                 });
             }
