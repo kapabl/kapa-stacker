@@ -122,11 +122,93 @@ pub fn index_repo(db: &Database, root: &str) -> Result<(), String> {
         cx_start.elapsed().as_secs_f32()
     );
 
+    // Buck2 targets
+    let buck_start = Instant::now();
+    let target_count = index_targets(db, root, &root_prefix)?;
+    if target_count > 0 {
+        eprintln!(
+            "  \x1b[32m✓\x1b[0m {} targets ({:.1}s)",
+            target_count,
+            buck_start.elapsed().as_secs_f32()
+        );
+    }
+
     eprintln!(
         "  \x1b[32m✓\x1b[0m Index complete in {:.1}s",
         start.elapsed().as_secs_f32()
     );
     Ok(())
+}
+
+fn index_targets(db: &Database, root: &str, root_prefix: &str) -> Result<usize, String> {
+    use crate::infrastructure::buck2;
+
+    let buck_files = walker::find_buck_files(root)?;
+    if buck_files.is_empty() { return Ok(0); }
+
+    let mut count: usize = 0;
+    db.with_conn(|conn| -> Result<(), String> {
+        conn.execute_batch("BEGIN").map_err(|e| e.to_string())?;
+
+        for file_path in &buck_files {
+            let abs = std::fs::canonicalize(file_path)
+                .unwrap_or_else(|_| std::path::PathBuf::from(file_path));
+            let relative = abs
+                .to_string_lossy()
+                .strip_prefix(root_prefix)
+                .unwrap_or(&abs.to_string_lossy())
+                .to_string();
+
+            let source = match std::fs::read_to_string(file_path) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+
+            let parsed = match buck2::parse_targets_file(&relative, &source) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("  \x1b[33mSkipping {}: {}\x1b[0m", relative, e);
+                    continue;
+                }
+            };
+
+            let package = buck2::package_from_targets_path(&relative);
+
+            for target in &parsed.targets {
+                let srcs_json = serde_json::to_string(&target.srcs).unwrap_or_default();
+                let deps_json = serde_json::to_string(&target.deps).unwrap_or_default();
+                let exported_json = serde_json::to_string(&target.exported_deps).unwrap_or_default();
+                let vis_json = serde_json::to_string(&target.visibility).unwrap_or_default();
+
+                conn.execute(
+                    "INSERT OR REPLACE INTO targets (path, name, rule, srcs, deps, exported_deps, visibility) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    params![relative, target.name, target.rule, srcs_json, deps_json, exported_json, vis_json],
+                ).map_err(|e| e.to_string())?;
+
+                let label = format!("//{}:{}", package, target.name);
+                for dep in &target.deps {
+                    let dep_label = buck2::resolve_label(dep, &package);
+                    conn.execute(
+                        "INSERT OR IGNORE INTO target_edges (source_label, dep_label, kind) VALUES (?, ?, 'dep')",
+                        params![label, dep_label],
+                    ).map_err(|e| e.to_string())?;
+                }
+                for dep in &target.exported_deps {
+                    let dep_label = buck2::resolve_label(dep, &package);
+                    conn.execute(
+                        "INSERT OR IGNORE INTO target_edges (source_label, dep_label, kind) VALUES (?, ?, 'exported_dep')",
+                        params![label, dep_label],
+                    ).map_err(|e| e.to_string())?;
+                }
+                count += 1;
+            }
+        }
+
+        conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
+        Ok(())
+    })?;
+
+    Ok(count)
 }
 
 fn compute_complexity(db: &Database, root: &str, _root_prefix: &str) -> Result<usize, String> {

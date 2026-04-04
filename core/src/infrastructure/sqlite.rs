@@ -80,6 +80,26 @@ fn create_tables(conn: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target);
         CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source);
         CREATE INDEX IF NOT EXISTS idx_files_hash ON files(content_hash);
+        CREATE TABLE IF NOT EXISTS targets (
+            path       TEXT NOT NULL,
+            name       TEXT NOT NULL,
+            rule       TEXT NOT NULL,
+            srcs       TEXT,
+            deps       TEXT,
+            exported_deps TEXT,
+            visibility TEXT,
+            PRIMARY KEY (path, name)
+        );
+        CREATE TABLE IF NOT EXISTS target_edges (
+            source_label TEXT NOT NULL,
+            dep_label    TEXT NOT NULL,
+            kind         TEXT NOT NULL,
+            PRIMARY KEY (source_label, dep_label, kind)
+        );
+        CREATE INDEX IF NOT EXISTS idx_targets_name ON targets(name);
+        CREATE INDEX IF NOT EXISTS idx_targets_path ON targets(path);
+        CREATE INDEX IF NOT EXISTS idx_target_edges_dep ON target_edges(dep_label);
+        CREATE INDEX IF NOT EXISTS idx_target_edges_source ON target_edges(source_label);
         ",
     )
 }
@@ -297,6 +317,68 @@ pub fn edge_count(conn: &Connection) -> rusqlite::Result<i64> {
 
 pub fn call_count(conn: &Connection) -> rusqlite::Result<i64> {
     conn.query_row("SELECT COUNT(*) FROM calls", [], |row| row.get(0))
+}
+
+pub fn target_count(conn: &Connection) -> rusqlite::Result<i64> {
+    conn.query_row("SELECT COUNT(*) FROM targets", [], |row| row.get(0))
+}
+
+pub fn find_target_for_file(conn: &Connection, source_file: &str) -> rusqlite::Result<Vec<TargetResult>> {
+    let basename = std::path::Path::new(source_file)
+        .file_name()
+        .map(|f| f.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let pattern = format!("%{}%", basename);
+    let mut stmt = conn.prepare(
+        "SELECT path, name, rule, srcs, deps FROM targets WHERE srcs LIKE ?"
+    )?;
+    let rows = stmt.query_map(params![pattern], |row| {
+        Ok(TargetResult {
+            path: row.get(0)?,
+            name: row.get(1)?,
+            rule: row.get(2)?,
+            srcs: row.get(3)?,
+            deps: row.get(4)?,
+        })
+    })?;
+    // Filter to exact file match within the JSON array
+    let results: Vec<TargetResult> = rows
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter(|t| {
+            if let Some(ref srcs) = t.srcs {
+                srcs.contains(&basename) || srcs.contains(source_file)
+            } else {
+                false
+            }
+        })
+        .collect();
+    Ok(results)
+}
+
+pub fn target_rdeps(conn: &Connection, target_label: &str) -> rusqlite::Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT source_label FROM target_edges WHERE dep_label = ?"
+    )?;
+    let rows = stmt.query_map(params![target_label], |row| row.get(0))?;
+    rows.collect()
+}
+
+pub fn target_deps(conn: &Connection, target_label: &str) -> rusqlite::Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT dep_label FROM target_edges WHERE source_label = ?"
+    )?;
+    let rows = stmt.query_map(params![target_label], |row| row.get(0))?;
+    rows.collect()
+}
+
+#[derive(Debug, Clone)]
+pub struct TargetResult {
+    pub path: String,
+    pub name: String,
+    pub rule: String,
+    pub srcs: Option<String>,
+    pub deps: Option<String>,
 }
 
 #[cfg(test)]

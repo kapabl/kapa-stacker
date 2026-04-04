@@ -12,6 +12,36 @@ const SKIP_DIRS: &[&str] = &[
     ".cortex-cache", ".tox", ".pytest_cache", ".cache",
 ];
 
+const BUCK_FILENAMES: &[&str] = &["TARGETS", "BUCK", "TARGETS.v2"];
+
+pub fn find_buck_files(root: &str) -> Result<Vec<String>, String> {
+    let mut files = Vec::new();
+    walk_dir_buck(std::path::Path::new(root), &mut files)?;
+    Ok(files)
+}
+
+fn walk_dir_buck(dir: &Path, files: &mut Vec<String>) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir).map_err(|e| format!("Cannot read {}: {}", dir.display(), e))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if path.is_dir() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if !SKIP_DIRS.contains(&name_str.as_ref()) {
+                walk_dir_buck(&path, files)?;
+            }
+        } else {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if BUCK_FILENAMES.contains(&name_str.as_ref()) {
+                files.push(path.to_string_lossy().to_string());
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn find_source_files(root: &str) -> Result<Vec<String>, String> {
     let mut files = Vec::new();
     walk_dir(Path::new(root), &mut files)?;
