@@ -21,7 +21,7 @@ fn main() {
             let root = root.as_deref().unwrap_or(".");
             run_index(root);
         }
-        Command::Lookup { symbol, json, brief } => query("lookup", serde_json::json!({"target": symbol}), parse_output_mode(json, brief)),
+        Command::Defs { symbol, json, brief } => query("lookup", serde_json::json!({"target": symbol}), parse_output_mode(json, brief)),
         Command::Refs { fqn, json, brief } => {
             let mode = parse_output_mode(json, brief);
             if fqn.len() == 1 {
@@ -30,8 +30,8 @@ fn main() {
                 query("refs", serde_json::json!({"targets": fqn}), mode);
             }
         }
-        Command::Explain { fqn, json, brief } => query("explain", serde_json::json!({"target": fqn}), parse_output_mode(json, brief)),
-        Command::Impact { target, json, brief } => query("impact", serde_json::json!({"target": target}), parse_output_mode(json, brief)),
+        Command::Inspect { fqn, json, brief } => query("explain", serde_json::json!({"target": fqn}), parse_output_mode(json, brief)),
+        Command::Rdeps { target, json, brief } => query("impact", serde_json::json!({"target": target}), parse_output_mode(json, brief)),
         Command::Deps { target, json, brief } => query("deps", serde_json::json!({"target": target}), parse_output_mode(json, brief)),
         Command::Hotspots { limit, json, brief } => query("hotspots", serde_json::json!({"limit": limit}), parse_output_mode(json, brief)),
         Command::Symbols { file, json, brief } => query("symbols", serde_json::json!({"target": file}), parse_output_mode(json, brief)),

@@ -33,58 +33,61 @@ pub enum Command {
         /// Root directory (default: current dir)
         root: Option<String>,
     },
-    /// Find all definitions of a symbol
-    Lookup {
+    /// Go to definition of a symbol
+    #[command(name = "defs")]
+    Defs {
         /// Symbol name
         symbol: String,
         /// JSON output
         #[arg(long)]
         json: bool,
-        /// Pre-digested briefing output
+        /// Briefing output
         #[arg(long)]
         brief: bool,
     },
-    /// Find LSP references for a symbol
+    /// Find all references to a symbol
     Refs {
         /// Fully qualified name(s)
         fqn: Vec<String>,
         /// JSON output
         #[arg(long)]
         json: bool,
-        /// Pre-digested briefing output
+        /// Briefing output
         #[arg(long)]
         brief: bool,
     },
-    /// Compact symbol summary
-    Explain {
+    /// Inspect symbol: signature, callers, callees, overrides
+    #[command(name = "inspect")]
+    Inspect {
         /// Fully qualified name
         fqn: String,
         /// JSON output
         #[arg(long)]
         json: bool,
-        /// Pre-digested briefing output
+        /// Briefing output
         #[arg(long)]
         brief: bool,
     },
-    /// What breaks if this changes
-    Impact {
+    /// Reverse dependencies: what breaks if this file or symbol changes
+    #[command(name = "rdeps")]
+    Rdeps {
         /// File path or symbol FQN
         target: String,
         /// JSON output
         #[arg(long)]
         json: bool,
-        /// Pre-digested briefing output
+        /// Briefing output
         #[arg(long)]
         brief: bool,
     },
-    /// Transitive dependencies
+    /// Transitive dependencies of a file
     Deps {
         /// File path
         target: String,
         /// JSON output
         #[arg(long)]
         json: bool,
-        /// Pre-digested briefing output
+        /// Briefing output
         #[arg(long)]
         brief: bool,
     },
@@ -96,7 +99,7 @@ pub enum Command {
         /// JSON output
         #[arg(long)]
         json: bool,
-        /// Pre-digested briefing output
+        /// Briefing output
         #[arg(long)]
         brief: bool,
     },
@@ -107,20 +110,20 @@ pub enum Command {
         /// JSON output
         #[arg(long)]
         json: bool,
-        /// Pre-digested briefing output
+        /// Briefing output
         #[arg(long)]
         brief: bool,
     },
     /// Trace call path between two symbols
     Trace {
-        /// Source FQN
+        /// Source symbol
         source: String,
-        /// Target FQN
+        /// Target symbol
         target: String,
         /// JSON output
         #[arg(long)]
         json: bool,
-        /// Pre-digested briefing output
+        /// Briefing output
         #[arg(long)]
         brief: bool,
     },
@@ -138,7 +141,7 @@ pub enum Command {
         /// JSON output
         #[arg(long)]
         json: bool,
-        /// Pre-digested briefing output
+        /// Briefing output
         #[arg(long)]
         brief: bool,
     },
