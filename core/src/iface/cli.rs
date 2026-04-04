@@ -1,5 +1,18 @@
 use clap::{Parser, Subcommand};
 
+#[derive(Clone, Copy, PartialEq)]
+pub enum OutputMode {
+    Text,
+    Json,
+    Briefing,
+}
+
+pub fn parse_output_mode(json: bool, brief: bool) -> OutputMode {
+    if brief { OutputMode::Briefing }
+    else if json { OutputMode::Json }
+    else { OutputMode::Text }
+}
+
 #[derive(Parser)]
 #[command(name = "kapa-cortex", about = "Local code intelligence engine")]
 pub struct Cli {
@@ -27,6 +40,9 @@ pub enum Command {
         /// JSON output
         #[arg(long)]
         json: bool,
+        /// Pre-digested briefing output
+        #[arg(long)]
+        brief: bool,
     },
     /// Find LSP references for a symbol
     Refs {
@@ -35,6 +51,9 @@ pub enum Command {
         /// JSON output
         #[arg(long)]
         json: bool,
+        /// Pre-digested briefing output
+        #[arg(long)]
+        brief: bool,
     },
     /// Compact symbol summary
     Explain {
@@ -43,6 +62,9 @@ pub enum Command {
         /// JSON output
         #[arg(long)]
         json: bool,
+        /// Pre-digested briefing output
+        #[arg(long)]
+        brief: bool,
     },
     /// What breaks if this changes
     Impact {
@@ -51,6 +73,9 @@ pub enum Command {
         /// JSON output
         #[arg(long)]
         json: bool,
+        /// Pre-digested briefing output
+        #[arg(long)]
+        brief: bool,
     },
     /// Transitive dependencies
     Deps {
@@ -59,6 +84,9 @@ pub enum Command {
         /// JSON output
         #[arg(long)]
         json: bool,
+        /// Pre-digested briefing output
+        #[arg(long)]
+        brief: bool,
     },
     /// Rank files by risk
     Hotspots {
@@ -68,6 +96,9 @@ pub enum Command {
         /// JSON output
         #[arg(long)]
         json: bool,
+        /// Pre-digested briefing output
+        #[arg(long)]
+        brief: bool,
     },
     /// List symbols in a file
     Symbols {
@@ -76,6 +107,9 @@ pub enum Command {
         /// JSON output
         #[arg(long)]
         json: bool,
+        /// Pre-digested briefing output
+        #[arg(long)]
+        brief: bool,
     },
     /// Trace call path between two symbols
     Trace {
@@ -86,6 +120,9 @@ pub enum Command {
         /// JSON output
         #[arg(long)]
         json: bool,
+        /// Pre-digested briefing output
+        #[arg(long)]
+        brief: bool,
     },
     /// Analyze branch and propose stacked PRs
     Analyze {
@@ -101,6 +138,9 @@ pub enum Command {
         /// JSON output
         #[arg(long)]
         json: bool,
+        /// Pre-digested briefing output
+        #[arg(long)]
+        brief: bool,
     },
     /// Check status
     Status,

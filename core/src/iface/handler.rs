@@ -288,14 +288,19 @@ fn handle_refs(
     let column = lsp::find_column(&file, line as usize, name) as i64;
     let raw_refs = client.get_references(&file, line - 1, column);
 
+    let cwd_prefix = std::env::current_dir()
+        .map(|p| format!("{}/", p.display()))
+        .unwrap_or_default();
+
     let references: Vec<serde_json::Value> = raw_refs
         .iter()
         .filter_map(|loc| {
             let uri = loc.get("uri")?.as_str()?;
             let range = loc.get("range")?;
             let ref_line = range.get("start")?.get("line")?.as_i64()? + 1;
-            let ref_path = uri.strip_prefix("file://")?;
-            Some(serde_json::json!({"file": ref_path, "line": ref_line}))
+            let abs_path = uri.strip_prefix("file://")?;
+            let rel_path = abs_path.strip_prefix(&cwd_prefix).unwrap_or(abs_path);
+            Some(serde_json::json!({"file": rel_path, "line": ref_line}))
         })
         .collect();
 

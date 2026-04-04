@@ -29,3 +29,18 @@ pub fn print_analysis_text(result: &AnalysisResult) {
 pub fn print_analysis_json(result: &AnalysisResult) {
     println!("{}", serde_json::to_string_pretty(result).unwrap_or_default());
 }
+
+pub fn print_analysis_brief(result: &AnalysisResult) {
+    println!("branch: {} -> {}", result.branch, result.base);
+    println!("files: {}", result.files.len());
+    println!("prs: {}", result.prs.len());
+    for pr in &result.prs {
+        let deps = if pr.depends_on.is_empty() {
+            String::new()
+        } else {
+            format!(" after:{}", pr.depends_on.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(","))
+        };
+        println!("#{} {} risk={}{}", pr.order, pr.title, pr.risk_level, deps);
+        for file in &pr.files { println!("  {}", file); }
+    }
+}

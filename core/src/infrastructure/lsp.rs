@@ -62,6 +62,8 @@ impl LspClient {
     pub fn get_references(&self, file_path: &str, line: i64, column: i64) -> Vec<Value> {
         let uri = path_to_uri(file_path);
         self.open_file(file_path);
+        // Give the LSP server time to process the opened file
+        std::thread::sleep(std::time::Duration::from_millis(500));
 
         let result = self.request("textDocument/references", serde_json::json!({
             "textDocument": {"uri": uri},
@@ -78,10 +80,11 @@ impl LspClient {
     fn open_file(&self, file_path: &str) {
         let uri = path_to_uri(file_path);
         let text = std::fs::read_to_string(file_path).unwrap_or_default();
+        let lang_id = language_id_from_path(file_path);
         self.notify("textDocument/didOpen", serde_json::json!({
             "textDocument": {
                 "uri": uri,
-                "languageId": "cpp",
+                "languageId": lang_id,
                 "version": 1,
                 "text": text,
             },
@@ -282,13 +285,28 @@ pub fn detect_all_languages(root: &str) -> Vec<&'static str> {
     langs
 }
 
-/// Find column where symbol starts on a given line.
-pub fn find_column(file_path: &str, line: usize, symbol: &str) -> usize {
+fn language_id_from_path(path: &str) -> &'static str {
+    match Path::new(path).extension().and_then(|e| e.to_str()).unwrap_or("") {
+        "c" => "c",
+        "h" | "cpp" | "cc" | "hpp" | "cxx" | "hxx" => "cpp",
+        "py" | "pyi" => "python",
+        "go" => "go",
+        "rs" => "rust",
+        "java" => "java",
+        "lua" => "lua",
+        "js" | "jsx" => "javascript",
+        "ts" | "tsx" => "typescript",
+        _ => "plaintext",
+    }
+}
+
+/// Find column where symbol starts on a given line (1-based line number).
+pub fn find_column(file_path: &str, line_1based: usize, symbol: &str) -> usize {
     std::fs::read_to_string(file_path)
         .ok()
         .and_then(|content| {
-            content.lines().nth(line).and_then(|l| {
-                l.find(symbol).map(|col| col)
+            content.lines().nth(line_1based.saturating_sub(1)).and_then(|l| {
+                l.find(symbol)
             })
         })
         .unwrap_or(0)
