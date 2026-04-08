@@ -70,11 +70,30 @@ kapa-cortex buck2 rdeps //app:lib       # reverse target dependencies
 
 ## MCP Server
 
-Run as an MCP server for AI agent integration:
+kapa-cortex is an MCP server. AI agents (Claude Code, Cursor, Windsurf, or
+any MCP-compatible client) can query definitions, references, impact
+analysis, and call graphs without reading source files.
 
 ```bash
-kapa-cortex mcp                         # stdio JSON-RPC 2.0
+kapa-cortex mcp                         # start stdio JSON-RPC 2.0 server
 ```
+
+Add to your MCP config:
+
+```json
+{
+  "mcpServers": {
+    "kapa-cortex": {
+      "command": "kapa-cortex",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+9 tools available: `defs`, `inspect`, `refs`, `rdeps`, `deps`, `trace`,
+`symbols`, `hotspots`, `status`. See [docs/mcp.md](docs/mcp.md) for
+full protocol details and tool schemas.
 
 ## Claude Code Skill
 
@@ -96,6 +115,13 @@ Python, C, C++, Java, Kotlin, Go, Rust, JavaScript, TypeScript,
 Gradle (Groovy + KTS), CMake, Buck2, BXL, Starlark/Bazel, Groovy, Lua.
 
 Analysis chain: LSP (daemon) -> tree-sitter -> ctags -> regex.
+
+## Documentation
+
+- [CLI Reference](docs/cli-reference.md) — all commands, flags, and examples
+- [MCP Server](docs/mcp.md) — protocol, tools, integration instructions
+- [Architecture](docs/architecture.md) — layer design, test coverage, roadmap
+- [Benchmarks](docs/benchmark-rename-refactoring.md) — token savings vs grep
 
 ## Architecture
 
